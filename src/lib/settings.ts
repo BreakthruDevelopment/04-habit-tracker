@@ -2,7 +2,7 @@ import "server-only";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Actor } from "@/lib/auth/rbac";
-import { db, schema } from "@/lib/db";
+import { type Db, db, schema } from "@/lib/db";
 import {
   DAY_SECONDS,
   REMINDER_MAX_MINUTES,
@@ -13,7 +13,7 @@ import {
 import { BadRequestError } from "@/lib/errors";
 import { log } from "@/lib/log";
 import { ownedBy } from "@/lib/owned";
-import { normalizeTimeZone } from "@/lib/time";
+import { localTodayFor, normalizeTimeZone } from "@/lib/time";
 import { advisoryLock, consumeRate } from "@/lib/usage";
 
 /**
@@ -122,4 +122,19 @@ export async function updateSettings(actor: Actor, input: UpdateSettingsInput, n
       .returning();
     return present(row);
   });
+}
+
+/**
+ * The actor's time zone and today's date there, read from the stored settings (UTC if the row doesn't
+ * exist yet). Never throws on a stored zone it doesn't recognise (see `localTodayFor`). `executor` lets
+ * a caller read inside its own transaction.
+ */
+export async function getLocalDay(
+  actor: Actor,
+  now: Date,
+  executor: Pick<Db, "select"> = db(),
+): Promise<{ timeZone: string; today: string }> {
+  const [row] = await executor.select({ timeZone: userSettings.timeZone }).from(userSettings).where(ownedBy(userSettings, actor));
+  const timeZone = normalizeTimeZone(row?.timeZone) ?? "UTC";
+  return { timeZone, today: localTodayFor(timeZone, now) };
 }

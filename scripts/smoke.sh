@@ -62,6 +62,70 @@ for endpoint in impersonate-user set-user-password; do
 done
 pass "admin impersonation and password reset endpoints are closed"
 
+# --- The habit flow (issue 10 rewrites this into the full smoke test) ---
+# req JAR METHOD PATH [BODY]: sets $CODE and $BODY (not in a subshell, so callers can read both).
+req() {
+  local jar=$1 method=$2 path=$3 body=${4:-}
+  local out; out=$(mktemp)
+  if [ -n "$body" ]; then
+    CODE=$(curl -s -o "$out" -w '%{http_code}' -b "$jar" -X "$method" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$body" "$BASE_URL$path")
+  else
+    CODE=$(curl -s -o "$out" -w '%{http_code}' -b "$jar" -X "$method" -H "origin: $BASE_URL" "$BASE_URL$path")
+  fi
+  BODY=$(cat "$out"); rm -f "$out"
+}
+expect() { [ "$CODE" = "$1" ] || fail "$2: expected $1, got $CODE ($BODY)"; }
+
+code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/api/habits")
+[ "$code" = "401" ] || fail "signed-out GET /api/habits should be 401, got $code"
+
+req "$JAR_A" GET "/api/settings?detectedZone=America/Denver"; expect 200 "settings"
+echo "$BODY" | jq -e '.settings.timeZone == "America/Denver"' >/dev/null || fail "settings did not take the detected zone: $BODY"
+req "$JAR_A" PATCH /api/settings '{"reminderTime":"20:00"}'; expect 200 "set reminder time"
+pass "time zone and reminder time"
+
+req "$JAR_A" POST /api/habits '{"name":"Read","weeklyGoal":5}'; expect 201 "create yes/no habit"
+yes_id=$(echo "$BODY" | jq -r .habit.id); yes_at=$(echo "$BODY" | jq -r .habit.updatedAt)
+req "$JAR_A" POST /api/habits '{"name":"Water","kind":"numeric","unit":"glasses","dailyTarget":"8"}'; expect 201 "create numeric habit"
+num_id=$(echo "$BODY" | jq -r .habit.id)
+req "$JAR_A" GET /api/today; expect 200 "today"
+today=$(echo "$BODY" | jq -r .date)
+[[ "$today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "today has no date: $BODY"
+
+req "$JAR_A" PUT "/api/habits/$yes_id/check-ins/$today" '{}'; expect 200 "check in"
+req "$JAR_A" PUT "/api/habits/$yes_id/check-ins/$today" '{}'; expect 200 "check in again"
+req "$JAR_A" PUT "/api/habits/$num_id/check-ins/$today" '{"value":"8"}'; expect 200 "numeric check in"
+req "$JAR_A" GET /api/today; expect 200 "today"
+n=$(echo "$BODY" | jq '[.habits[] | select(.done)] | length'); [ "$n" = "2" ] || fail "expected 2 done habits, got $n"
+pass "habits created and checked in (twice is one row)"
+
+later=$(date -u -d '+2 days' +%F)
+req "$JAR_A" PUT "/api/habits/$yes_id/check-ins/$later" '{}'; expect 400 "future check-in"
+req "$JAR_A" PATCH "/api/habits/$yes_id" "{\"updatedAt\":\"$yes_at\",\"name\":\"Read more\"}"; expect 200 "patch"
+req "$JAR_A" PATCH "/api/habits/$yes_id" "{\"updatedAt\":\"$yes_at\",\"name\":\"Stale\"}"; expect 409 "stale patch"
+pass "future date is 400, stale update is 409"
+
+req "$JAR_B" GET "/api/habits/$yes_id"; expect 404 "another user's habit (GET)"
+req "$JAR_B" PATCH "/api/habits/$yes_id" "{\"updatedAt\":\"$yes_at\",\"name\":\"Mine\"}"; expect 404 "another user's habit (PATCH)"
+req "$JAR_B" DELETE "/api/habits/$yes_id"; expect 404 "another user's habit (DELETE)"
+req "$JAR_B" PUT "/api/habits/$yes_id/check-ins/$today" '{}'; expect 404 "another user's check-in"
+req "$JAR_B" GET "/api/progress/heatmap?habitId=$yes_id"; expect 404 "another user's heatmap"
+pass "another user gets 404 on the habit"
+
+req "$JAR_A" GET /api/progress/week; expect 200 "week summary"
+echo "$BODY" | jq -e '(.week | test("^[0-9]{4}-W[0-9]{2}$")) and (.habits | length) == 2 and .totals.checkIns == 2' >/dev/null || fail "week summary shape: $BODY"
+week=$(echo "$BODY" | jq -r .week)
+req "$JAR_A" GET "/api/progress/week?week=$week"; expect 200 "week round-trip"
+echo "$BODY" | jq -e --arg w "$week" '.week == $w' >/dev/null || fail "week did not echo: $BODY"
+req "$JAR_A" GET "/api/progress/week?week=2027-W53"; expect 400 "a week that doesn't exist"
+req "$JAR_A" GET /api/progress/heatmap; expect 200 "heatmap"
+echo "$BODY" | jq -e '(.days | length) == 30' >/dev/null || fail "heatmap should have 30 days"
+pass "week summary and heatmap"
+
+req "$JAR_A" DELETE "/api/habits/$yes_id"; expect 204 "delete habit"
+req "$JAR_A" GET "/api/habits/$yes_id"; expect 404 "deleted habit"
+pass "habit deleted"
+
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{}' "$BASE_URL/api/auth/sign-out")
 [ "$code" = "200" ] || fail "sign-out should be 200, got $code"
 pass "user signed out"
