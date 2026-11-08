@@ -69,6 +69,14 @@ function present(row: typeof userSettings.$inferSelect): Settings {
   };
 }
 
+/** The actor's settings, or null when they haven't been created yet. Read-only: never writes. */
+export async function getSettings(actor: Actor): Promise<Settings | null> {
+  const [row] = await db().select().from(userSettings).where(ownedBy(userSettings, actor));
+  return row ? present(row) : null;
+}
+
+export const detectZoneSchema = z.object({ detectedZone: z.string().max(64) }).strict();
+
 /**
  * The actor's settings, created on first use. `detectedZone` is the browser's zone
  * (`Intl.DateTimeFormat().resolvedOptions().timeZone`); it is used only when the row is created, and

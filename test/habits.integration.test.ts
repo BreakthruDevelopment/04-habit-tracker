@@ -46,8 +46,12 @@ describe.skipIf(!url)("habits (Postgres)", () => {
   const root = mkUser("root", "admin");
   const all = [ada, ben, root];
 
-  const habitIn = async (u: U, over: Record<string, unknown> = {}) =>
-    habits.createHabit(u, { name: "Read", ...over });
+  /** Creates a habit and backdates its creation day, so tests can check in on earlier days of 2026. */
+  const habitIn = async (u: U, over: Record<string, unknown> = {}, createdAt = "2026-01-01") => {
+    const h = await habits.createHabit(u, { name: "Read", ...over });
+    await sql`update habit set created_at = ${createdAt} where id = ${h.id}`;
+    return habits.getHabit(u, h.id);
+  };
   const setZone = async (u: U, tz: string) => {
     await sql`insert into user_settings (user_id, time_zone) values (${u.id}, ${tz}) on conflict (user_id) do update set time_zone = ${tz}`;
   };
@@ -478,7 +482,7 @@ describe.skipIf(!url)("habits (Postgres)", () => {
       expect(r).toMatchObject({ doneDays: 2, total: "55.5", goalMet: true, lastWeekDoneDays: 1, dailyTarget: "20" });
       expect(r.values).toEqual(["25", "10.5", "20", null, null, null, null]);
       expect(s.habits.find((h) => h.name === "Run")).toMatchObject({ doneDays: 1, goalMet: false });
-      expect(s.totals).toEqual({ habits: 2, habitsOnGoal: 1, checkIns: 3, completionPct: Math.round((100 * 3) / 5) });
+      expect(s.totals).toEqual({ habits: 2, habitsOnGoal: 1, doneCheckIns: 3, completionPct: Math.round((100 * 3) / 5) });
       const mid = await progress.weekSummary(ada, null, at("2026-11-04T12:00:00Z"));
       expect(mid).toMatchObject({ week: "2026-W45", daysElapsed: 3 });
     });
@@ -608,20 +612,47 @@ describe.skipIf(!url)("habits (Postgres)", () => {
         expect(plan, `${name}\n${plan}`).toMatch(/check_in_habit_id_local_date_pk|check_in_owner_date_covering_idx/);
       }
       expect(plans.heatmap).toMatch(/check_in_owner_date_covering_idx/);
+      // The admin "check-ins today" count (one local_date across all owners) has its own index.
+      const adminPlan = (await sql`explain select count(*) from check_in where local_date = '2026-10-01'`).map((r) => r["QUERY PLAN"]).join("\n");
+      expect(adminPlan).not.toMatch(/Seq Scan on check_in/);
+      expect(adminPlan).toMatch(/check_in_local_date_idx/);
       await sql`delete from "user" where id like 'hb-x%'`;
     });
   });
 
   // -------------------------------------------------------------------------
   describe("settings route", () => {
-    it("creates settings from the browser zone on the first GET, then PATCHes within the limits", async () => {
+    it("keeps GET read-only, and creates settings from the browser zone only through a same-origin POST /detect", async () => {
       await reset();
       const route = await import("@/app/api/settings/route");
+      const detect = await import("@/app/api/settings/detect/route");
+      const zone = async (res: Response) => ((await res.json()) as { settings: { timeZone: string } | null }).settings?.timeZone ?? null;
       asUser(ada);
-      const first = await route.GET(new Request("http://localhost:3000/api/settings?detectedZone=Europe/London"));
-      expect(((await first.json()) as { settings: { timeZone: string } }).settings.timeZone).toBe("Europe/London");
-      const again = await route.GET(new Request("http://localhost:3000/api/settings?detectedZone=Asia/Tokyo"));
-      expect(((await again.json()) as { settings: { timeZone: string } }).settings.timeZone).toBe("Europe/London");
+      // GET (even with the old query parameter) writes nothing and says there is no row yet.
+      const before = await route.GET();
+      expect(before.status).toBe(200);
+      expect(await zone(before)).toBeNull();
+      expect((await sql`select count(*)::int n from user_settings where user_id = ${ada.id}`)[0].n).toBe(0);
+
+      const post = (body: unknown, origin: string | null = ORIGIN) =>
+        detect.POST(new Request("http://localhost:3000/api/settings/detect", { method: "POST", headers: { ...(origin ? { origin } : {}), "content-type": "application/json" }, body: JSON.stringify(body) }));
+      expect((await post({ detectedZone: "Europe/London" }, "https://evil.example")).status).toBe(403);
+      expect((await post({ detectedZone: "Europe/London" }, null)).status).toBe(403);
+      expect((await sql`select count(*)::int n from user_settings where user_id = ${ada.id}`)[0].n).toBe(0);
+      expect((await post({ detectedZone: "x".repeat(65) })).status).toBe(400);
+      expect((await post({ detectedZone: "Europe/London", extra: 1 })).status).toBe(400);
+      expect((await post({})).status).toBe(400);
+      asUser(null);
+      expect((await post({ detectedZone: "Europe/London" })).status).toBe(401);
+      asUser(ada);
+      expect(await zone(await post({ detectedZone: "Europe/London" }))).toBe("Europe/London");
+      expect(await zone(await post({ detectedZone: "Asia/Tokyo" }))).toBe("Europe/London"); // the row exists: ignored
+      expect(await zone(await route.GET())).toBe("Europe/London");
+      // A zone we don't accept starts the row as UTC.
+      asUser(ben);
+      expect(await zone(await post({ detectedZone: "Mars/Olympus" }))).toBe("UTC");
+      await sql`delete from user_settings where user_id = ${ben.id}`;
+      asUser(ada);
       const patch = await route.PATCH(json("PATCH", { timeZone: "Asia/Kolkata", reminderTime: "20:15" }));
       expect(patch.status).toBe(200);
       expect(((await patch.json()) as { settings: { reminderTime: string } }).settings.reminderTime).toBe("20:15");
@@ -630,10 +661,125 @@ describe.skipIf(!url)("habits (Postgres)", () => {
       expect((await route.PATCH(json("PATCH", { timeZone: "UTC" }))).status).toBe(200);
       expect((await route.PATCH(json("PATCH", { timeZone: "Europe/Paris" }))).status).toBe(200);
       expect((await route.PATCH(json("PATCH", { timeZone: "Asia/Tokyo" }))).status).toBe(429);
-      asUser(ben);
-      expect(((await (await route.GET(new Request("http://localhost:3000/api/settings"))).json()) as { settings: { timeZone: string } }).settings.timeZone).toBe("UTC");
       // The zone drives "today" for the data layer.
       expect((await settings.getLocalDay(ada, at("2026-11-08T23:30:00Z"))).today).toBe("2026-11-09"); // Paris, UTC+1
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("edge cases", () => {
+    const now = at("2026-11-08T12:00:00Z");
+
+    it("leaves one row and no errors when the same day is PUT concurrently", async () => {
+      await reset();
+      await setZone(ada, "UTC");
+      const h = await habitIn(ada, { name: "Water", kind: "numeric", unit: "glasses", dailyTarget: "8" });
+      const results = await Promise.allSettled(
+        Array.from({ length: 12 }, (_, i) => checkins.setCheckIn(ada, h.id, "2026-11-08", { value: String(i + 1) }, now)),
+      );
+      expect(results.filter((r) => r.status === "rejected")).toEqual([]);
+      const rows = await sql`select value::text v, done from check_in where habit_id = ${h.id}`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].done).toBe(Number(rows[0].v) >= 8);
+      // The 12 writes each used one slot of the hourly limit.
+      expect((await sql`select count(*)::int n from rate_event where user_id = ${ada.id} and kind = 'checkin'`)[0].n).toBe(12);
+    });
+
+    it("re-evaluates past weeks and switches between day and week mode when the weekly goal changes (7 to 3)", async () => {
+      await reset();
+      await setZone(ada, "UTC");
+      const h = await habitIn(ada); // goal 7
+      await seed(ada, h.id, ["2026-10-26", "2026-10-27", "2026-10-28", "2026-11-02", "2026-11-03", "2026-11-04"]);
+      expect(((await progress.streaks(ada, now))[h.id])).toEqual({ mode: "day", current: 0, best: 3 });
+      const to3 = await habits.updateHabit(ada, h.id, { updatedAt: h.updatedAt.toISOString(), weeklyGoal: 3 });
+      expect(((await progress.streaks(ada, now))[h.id])).toEqual({ mode: "week", current: 2, best: 2 });
+      expect((await progress.weekSummary(ada, "2026-W44", now)).habits[0]).toMatchObject({ doneDays: 3, goalMet: true });
+      await habits.updateHabit(ada, h.id, { updatedAt: to3.updatedAt.toISOString(), weeklyGoal: 7 });
+      expect(((await progress.streaks(ada, now))[h.id])).toEqual({ mode: "day", current: 0, best: 3 });
+      // Check-ins themselves were never rewritten.
+      expect((await sql`select count(*)::int n from check_in where habit_id = ${h.id} and done`)[0].n).toBe(6);
+    });
+
+    it("takes the longer run when a check-in dated after today leaves two runs alive", async () => {
+      await reset();
+      await setZone(ada, "UTC");
+      const h = await habitIn(ada);
+      // Today is 2026-11-08: a run ending yesterday (2 days) and one starting tomorrow (3 days).
+      await seed(ada, h.id, ["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-06", "2026-11-07"]);
+      for (let i = 0; i < 3; i++) expect((await progress.streaks(ada, now))[h.id]).toEqual({ mode: "day", current: 3, best: 3 });
+    });
+
+    it("refuses check-ins before the habit's creation day in the user's zone, and clears on an archived habit", async () => {
+      await reset();
+      await setZone(ada, "America/Denver");
+      // Created 2026-11-08 02:00 UTC = 2026-11-07 19:00 in Denver: the creation day there is the 7th.
+      const h = await habitIn(ada, {}, "2026-11-08T02:00:00Z");
+      const t = at("2026-11-08T12:00:00Z");
+      await expect(checkins.setCheckIn(ada, h.id, "2026-11-06", {}, t)).rejects.toMatchObject({ status: 400 });
+      await expect(checkins.setCheckIn(ada, h.id, "2026-11-07", {}, t)).resolves.toMatchObject({ date: "2026-11-07" });
+      await checkins.setCheckIn(ada, h.id, "2026-11-08", {}, t);
+      await habits.archiveHabit(ada, h.id);
+      await expect(checkins.clearCheckIn(ada, h.id, "2026-11-08", t)).rejects.toMatchObject({ status: 409 });
+      await expect(checkins.setCheckIn(ada, h.id, "2026-11-08", {}, t)).rejects.toMatchObject({ status: 409 });
+      expect((await sql`select count(*)::int n from check_in where habit_id = ${h.id}`)[0].n).toBe(2);
+    });
+
+    it("shows an archived habit's real streak and history", async () => {
+      await reset();
+      await setZone(ada, "UTC");
+      const day = await habitIn(ada);
+      await seed(ada, day.id, ["2026-11-06", "2026-11-07", "2026-11-08"]);
+      const wk = await habitIn(ada, { name: "Weekly", weeklyGoal: 2 });
+      await seed(ada, wk.id, ["2026-10-26", "2026-10-27", "2026-11-02", "2026-11-03"]);
+      await habits.archiveHabit(ada, day.id);
+      await habits.archiveHabit(ada, wk.id);
+      const d = await progress.habitProgress(ada, day.id, now);
+      expect(d.streak).toEqual({ mode: "day", current: 3, best: 3 });
+      expect(d.recent[0]).toMatchObject({ date: "2026-11-08", done: true });
+      const w = await progress.habitProgress(ada, wk.id, now);
+      expect(w.streak).toEqual({ mode: "week", current: 2, best: 2 });
+      expect(w.weeks.at(-1)).toMatchObject({ doneDays: 2, goalMet: true });
+      // The all-habits streak list still covers active habits only.
+      expect(await progress.streaks(ada, now)).toEqual({});
+    });
+
+    it("keeps an archived habit in the heatmap on the day it was archived, like the week query", async () => {
+      await reset();
+      await setZone(ada, "UTC");
+      const a = await habitIn(ada, { name: "A" });
+      const b = await habitIn(ada, { name: "B" });
+      await sql`update habit set archived_at = '2026-11-05T10:00:00Z' where id = ${b.id}`;
+      await seed(ada, a.id, ["2026-11-05", "2026-11-06"]);
+      const h = await progress.heatmap(ada, {}, now);
+      const total = (d: string) => h.days.find((x) => x.date === d)!.total;
+      expect(total("2026-11-05")).toBe(2); // archived that day: still counted
+      expect(total("2026-11-06")).toBe(1);
+    });
+
+    it("rejects control characters and line breaks in names and units", async () => {
+      await reset();
+      for (const name of ["Read\nmore", "Tab\there", "a\u0000b", "x\u2028y", "bell\u0007", "esc\u001b[0m"]) {
+        await expect(habits.createHabit(ada, { name })).rejects.toMatchObject({ name: "ZodError" });
+      }
+      await expect(habits.createHabit(ada, { name: "Water", kind: "numeric", unit: "gla\nsses", dailyTarget: "8" })).rejects.toMatchObject({ name: "ZodError" });
+      const h = await habitIn(ada, { name: "Read" });
+      await expect(habits.updateHabit(ada, h.id, { updatedAt: h.updatedAt.toISOString(), name: "Line\r\nbreak" })).rejects.toMatchObject({ name: "ZodError" });
+      await expect(habits.createHabit(ada, { name: "  Café — réad 読書  " })).resolves.toMatchObject({ name: "Café — réad 読書" });
+    });
+
+    it("treats an empty ?week= and ?days= as absent", async () => {
+      await reset();
+      await setZone(ada, "UTC");
+      asUser(ada);
+      const week = await import("@/app/api/progress/week/route");
+      const hm = await import("@/app/api/progress/heatmap/route");
+      const w = await week.GET(new Request("http://localhost:3000/api/progress/week?week="));
+      expect(w.status).toBe(200);
+      expect(((await w.json()) as { isCurrent: boolean }).isCurrent).toBe(true);
+      const h = await hm.GET(new Request("http://localhost:3000/api/progress/heatmap?days=&habitId="));
+      expect(h.status).toBe(200);
+      expect(((await h.json()) as { days: unknown[] }).days).toHaveLength(30);
+      expect((await hm.GET(new Request("http://localhost:3000/api/progress/heatmap?days=0"))).status).toBe(400);
     });
   });
 

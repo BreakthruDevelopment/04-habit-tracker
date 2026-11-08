@@ -79,8 +79,13 @@ expect() { [ "$CODE" = "$1" ] || fail "$2: expected $1, got $CODE ($BODY)"; }
 code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/api/habits")
 [ "$code" = "401" ] || fail "signed-out GET /api/habits should be 401, got $code"
 
-req "$JAR_A" GET "/api/settings?detectedZone=America/Denver"; expect 200 "settings"
+req "$JAR_A" GET /api/settings; expect 200 "settings before first sign-in"
+echo "$BODY" | jq -e '.settings == null' >/dev/null || fail "GET /api/settings must not create the row: $BODY"
+req "$JAR_A" POST /api/settings/detect '{"detectedZone":"America/Denver"}'; expect 200 "detect zone"
 echo "$BODY" | jq -e '.settings.timeZone == "America/Denver"' >/dev/null || fail "settings did not take the detected zone: $BODY"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_B" -X POST -H 'content-type: application/json' -H 'origin: https://evil.example' -d '{"detectedZone":"Asia/Tokyo"}' "$BASE_URL/api/settings/detect")
+[ "$code" = "403" ] || fail "cross-origin detect should be 403, got $code"
+req "$JAR_B" GET /api/settings; echo "$BODY" | jq -e '.settings == null' >/dev/null || fail "cross-origin detect created settings: $BODY"
 req "$JAR_A" PATCH /api/settings '{"reminderTime":"20:00"}'; expect 200 "set reminder time"
 pass "time zone and reminder time"
 
@@ -113,7 +118,7 @@ req "$JAR_B" GET "/api/progress/heatmap?habitId=$yes_id"; expect 404 "another us
 pass "another user gets 404 on the habit"
 
 req "$JAR_A" GET /api/progress/week; expect 200 "week summary"
-echo "$BODY" | jq -e '(.week | test("^[0-9]{4}-W[0-9]{2}$")) and (.habits | length) == 2 and .totals.checkIns == 2' >/dev/null || fail "week summary shape: $BODY"
+echo "$BODY" | jq -e '(.week | test("^[0-9]{4}-W[0-9]{2}$")) and (.habits | length) == 2 and .totals.doneCheckIns == 2' >/dev/null || fail "week summary shape: $BODY"
 week=$(echo "$BODY" | jq -r .week)
 req "$JAR_A" GET "/api/progress/week?week=$week"; expect 200 "week round-trip"
 echo "$BODY" | jq -e --arg w "$week" '.week == $w' >/dev/null || fail "week did not echo: $BODY"

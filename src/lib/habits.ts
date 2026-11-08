@@ -70,8 +70,10 @@ export const decimalSchema = z
   .pipe(z.string().regex(/^\d{1,6}(\.\d{1,2})?$/, "Use a number with at most 2 decimals, for example 8 or 2.5"))
   .refine((v) => Number(v) > 0 && Number(v) <= MAX_VALUE, `Must be above 0 and at most ${MAX_VALUE}`);
 
-const nameSchema = z.string().trim().min(1, "Name is required").max(HABIT_NAME_MAX);
-const unitSchema = z.string().trim().min(1).max(HABIT_UNIT_MAX);
+/** No control characters (newlines and tabs included) or line/paragraph separators: names show up in lists, logs and prompts. */
+const noControl = (v: string) => !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(v);
+const nameSchema = z.string().trim().min(1, "Name is required").max(HABIT_NAME_MAX).refine(noControl, "Name can't contain control characters or line breaks");
+const unitSchema = z.string().trim().min(1).max(HABIT_UNIT_MAX).refine(noControl, "Unit can't contain control characters or line breaks");
 const goalSchema = z.number().int().min(1).max(7);
 
 export const createHabitSchema = z

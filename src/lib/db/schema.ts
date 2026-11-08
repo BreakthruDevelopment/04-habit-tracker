@@ -163,6 +163,8 @@ export const checkIn = pgTable(
     primaryKey({ columns: [t.habitId, t.localDate] }),
     // A check-in can't belong to anyone but its habit's owner, even through a bug.
     foreignKey({ columns: [t.habitId, t.ownerId], foreignColumns: [habit.id, habit.ownerId], name: "check_in_habit_owner_fk" }).onDelete("cascade"),
+    // Admin counts look at one local_date across all owners.
+    index("check_in_local_date_idx").on(t.localDate),
     check("check_in_value_chk", sql`${t.value} > 0 and ${t.value} <= ${sql.raw(String(MAX_VALUE))}`),
   ],
 );

@@ -18,6 +18,10 @@ const { habit, checkIn } = schema;
 // ---------------------------------------------------------------------------
 
 /**
+ * Which kind of streak a habit has follows its *current* weekly goal, and past check-ins are never rewritten. So
+ * changing the goal re-evaluates all past weeks (a week "met" at goal 3 may not be at 5) and switches the habit
+ * between day mode (goal 7) and week mode (goal under 7); the streak shown changes with it.
+ *
  * `day`: consecutive done days (habits with a weekly goal of 7). `week`: consecutive ISO weeks that met the goal
  * (goal under 7). `current` ends today (or yesterday while today is still open) for `day`, and this week (or last
  * week while this one isn't met yet) for `week`. `best` is the longest run in the last 400 days.
@@ -29,20 +33,21 @@ export type Streak = { mode: "day" | "week"; current: number; best: number };
  * of consecutive dates. Week islands use a continuous week index, `(Monday - 2001-01-01) / 7`, which goes up by one
  * across year ends (2026-W53 to 2027-W01), unlike the week number, which resets. Exported so tests can EXPLAIN it.
  */
-export function streakIslandsQuery(userId: string, from: string, habitId?: string) {
+export function streakIslandsQuery(userId: string, from: string, habitId?: string, includeArchived = false) {
   const only = habitId ? sql`and h.id = ${habitId}::uuid` : sql``;
+  const live = includeArchived ? sql`` : sql`and h.archived_at is null`;
   return sql`
     select habit_id::text as "habitId", mode, max(idx)::int as "endIdx", count(*)::int as len from (
       select habit_id, mode, idx, idx - row_number() over (partition by habit_id, mode order by idx)::int as grp from (
         select c.habit_id, 'day' as mode, (c.local_date - date '1970-01-01') as idx
         from check_in c join habit h on h.id = c.habit_id and h.owner_id = c.owner_id
         where c.owner_id = ${userId} and c.local_date >= ${from}::date and c.done
-          and h.archived_at is null and h.weekly_goal = 7 ${only}
+          ${live} and h.weekly_goal = 7 ${only}
         union all
         select c.habit_id, 'week' as mode, ((date_trunc('week', c.local_date)::date - date '2001-01-01') / 7) as idx
         from check_in c join habit h on h.id = c.habit_id and h.owner_id = c.owner_id
         where c.owner_id = ${userId} and c.local_date >= ${from}::date and c.done
-          and h.archived_at is null and h.weekly_goal < 7 ${only}
+          ${live} and h.weekly_goal < 7 ${only}
         group by c.habit_id, idx, h.weekly_goal
         having count(*) >= h.weekly_goal
       ) runs
@@ -54,9 +59,9 @@ export function streakIslandsQuery(userId: string, from: string, habitId?: strin
 type Island = { habitId: string; mode: "day" | "week"; endIdx: number; len: number };
 
 /** Streaks for the actor's active habits (or just `habitId`), as of local date `today`. */
-async function computeStreaks(userId: string, today: string, habitId?: string): Promise<Map<string, Streak>> {
+async function computeStreaks(userId: string, today: string, habitId?: string, includeArchived = false): Promise<Map<string, Streak>> {
   const from = weekStart(addDays(today, -STREAK_LOOKBACK_DAYS));
-  const rows = (await db().execute(streakIslandsQuery(userId, from, habitId))) as unknown as Island[];
+  const rows = (await db().execute(streakIslandsQuery(userId, from, habitId, includeArchived))) as unknown as Island[];
   const dayNow = daysBetween("1970-01-01", today);
   const weekNow = weekIndex(today);
   const out = new Map<string, Streak>();
@@ -64,7 +69,9 @@ async function computeStreaks(userId: string, today: string, habitId?: string): 
     const s = out.get(r.habitId) ?? { mode: r.mode, current: 0, best: 0 };
     s.best = Math.max(s.best, r.len);
     // Ending today or yesterday (this week or last) keeps the run alive.
-    if (r.endIdx >= (r.mode === "day" ? dayNow : weekNow) - 1) s.current = r.len;
+    // A check-in dated after today (the user moved west) can leave two runs that both count as live:
+    // take the longer, so the answer doesn't depend on row order.
+    if (r.endIdx >= (r.mode === "day" ? dayNow : weekNow) - 1) s.current = Math.max(s.current, r.len);
     out.set(r.habitId, s);
   }
   return out;
@@ -175,7 +182,7 @@ export type WeekSummary = {
   /** 1 to 7: days of this week that have happened (7 for past weeks). */
   daysElapsed: number;
   habits: WeekHabit[];
-  totals: { habits: number; habitsOnGoal: number; checkIns: number; completionPct: number };
+  totals: { habits: number; habitsOnGoal: number; doneCheckIns: number; completionPct: number };
 };
 
 /**
@@ -213,7 +220,7 @@ type WeekRow = Omit<WeekHabit, "values" | "goalMet"> & { values: Record<string, 
 export async function weekSummary(actor: Actor, weekLabel?: string | null, now: Date = new Date()): Promise<WeekSummary> {
   const { timeZone, today: date } = await getLocalDay(actor, now);
   const currentWeek = isoWeek(date);
-  const week = weekLabel ?? currentWeek;
+  const week = weekLabel || currentWeek; // an empty ?week= means "this week"
   const monday = parseIsoWeek(week); // 400 for a week that doesn't exist, e.g. 2027-W53
   const age = weekIndex(date) - weekIndex(monday);
   if (age < 0 || age > PROGRESS_WEEKS - 1) {
@@ -245,7 +252,7 @@ export async function weekSummary(actor: Actor, weekLabel?: string | null, now: 
     totals: {
       habits: habits.length,
       habitsOnGoal: habits.filter((h) => h.goalMet).length,
-      checkIns: habits.reduce((n, h) => n + h.doneDays, 0),
+      doneCheckIns: habits.reduce((n, h) => n + h.doneDays, 0),
       completionPct: goalSum === 0 ? 0 : Math.round((100 * counted) / goalSum),
     },
   };
@@ -273,7 +280,7 @@ export function heatmapQuery(userId: string, timeZone: string, from: string, to:
     select d::date::text as date, coalesce(c.n, 0)::int as done,
       (select count(*) from habit h where h.owner_id = ${userId}
          and (h.created_at at time zone ${timeZone})::date <= d::date
-         and (h.archived_at is null or (h.archived_at at time zone ${timeZone})::date > d::date))::int as total
+         and (h.archived_at is null or (h.archived_at at time zone ${timeZone})::date >= d::date))::int as total
     from generate_series(${from}::date, ${to}::date, interval '1 day') d
     left join (
       select local_date, count(*) filter (where done) as n from check_in
@@ -298,7 +305,7 @@ export function habitHeatmapQuery(userId: string, habitId: string, from: string,
  * that habit alone: `done` is 1 or 0 and `value` is what was saved.
  */
 export async function heatmap(actor: Actor, opts: { days?: unknown; habitId?: string | null } = {}, now: Date = new Date()): Promise<Heatmap> {
-  const { days } = heatmapOptsSchema.parse({ days: opts.days ?? undefined });
+  const { days } = heatmapOptsSchema.parse({ days: opts.days === "" ? undefined : (opts.days ?? undefined) });
   const { timeZone, today: to } = await getLocalDay(actor, now);
   const from = addDays(to, -(days - 1));
   if (opts.habitId) {
@@ -354,7 +361,7 @@ export async function habitProgress(actor: Actor, habitId: string, now: Date = n
   const { today: date } = await getLocalDay(actor, now);
   const firstMonday = addDays(weekBounds(date).monday, -7 * 7);
   const [streakMap, rows] = await Promise.all([
-    computeStreaks(actor.id, date, h.id),
+    computeStreaks(actor.id, date, h.id, true), // an archived habit keeps its real history
     db()
       .select({ date: checkIn.localDate, done: checkIn.done, value: checkIn.value })
       .from(checkIn)
@@ -405,7 +412,7 @@ export async function adminCounts(actor: Actor): Promise<AdminCounts> {
     select
       (select count(*) from "user")::int as users,
       (select count(*) from habit where archived_at is null)::int as "activeHabits",
-      (select count(*) from check_in where local_date = (now() at time zone 'utc')::date)::int as "checkInsToday",
+      (select count(*) from check_in where local_date = (now() at time zone 'utc')::date)::int as "checkInsToday" /* UTC date, served by check_in_local_date_idx */,
       (select count(*) from check_in where local_date between (now() at time zone 'utc')::date - 6 and (now() at time zone 'utc')::date)::int as "checkInsLast7Days",
       (select count(*) from push_subscription)::int as "pushDevices",
       coalesce((select count from daily_usage where day = (now() at time zone 'utc')::date and kind = 'push'), 0)::int as "remindersSentToday",

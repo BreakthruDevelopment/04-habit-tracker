@@ -9,7 +9,7 @@ export async function GET(request: Request) {
   try {
     const user = await requireUser();
     const p = new URL(request.url).searchParams;
-    return Response.json(await heatmap(user, { habitId: p.get("habitId"), days: p.get("days") ?? undefined }));
+    return Response.json(await heatmap(user, { habitId: p.get("habitId"), days: p.get("days") || undefined }));
   } catch (err) {
     return errorResponse(err);
   }

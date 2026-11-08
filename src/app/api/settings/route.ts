@@ -1,20 +1,18 @@
 import { requireUser } from "@/lib/auth/session";
 import { requireSameOrigin } from "@/lib/csrf";
 import { errorResponse, readJson } from "@/lib/http";
-import { getOrCreateSettings, updateSettings } from "@/lib/settings";
+import { getSettings, updateSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/settings[?detectedZone=Europe/London]. On the first call the row is created, starting from
- * `detectedZone` (the browser's `Intl.DateTimeFormat().resolvedOptions().timeZone`) when we accept it, else UTC.
- * Later calls ignore it. This is how the client reports the browser zone on first sign-in.
+ * GET /api/settings: `{ settings }`, or `{ settings: null }` before the row exists. Read-only, so a cross-site
+ * navigation can't change anything. The first sign-in reports the browser's zone with POST /api/settings/detect.
  */
-export async function GET(request: Request) {
+export async function GET() {
   try {
     const user = await requireUser();
-    const detected = new URL(request.url).searchParams.get("detectedZone");
-    return Response.json({ settings: await getOrCreateSettings(user, detected) });
+    return Response.json({ settings: await getSettings(user) });
   } catch (err) {
     return errorResponse(err);
   }

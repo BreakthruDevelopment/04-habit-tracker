@@ -9,7 +9,7 @@ import { BadRequestError, ConflictError, NotFoundError } from "@/lib/errors";
 import { decimalSchema, parseHabitId, trimNumeric } from "@/lib/habits";
 import { ownedBy } from "@/lib/owned";
 import { getLocalDay } from "@/lib/settings";
-import { daysBetween, isValidDate } from "@/lib/time";
+import { daysBetween, isValidDate, localTodayFor } from "@/lib/time";
 import { consumeRate } from "@/lib/usage";
 
 const { habit, checkIn } = schema;
@@ -50,9 +50,11 @@ export async function setCheckIn(actor: Actor, habitId: string, date: string, in
     // Share-lock the habit so it can't be deleted between the check and the insert.
     const [h] = await tx.select().from(habit).where(ownedBy(habit, actor, eq(habit.id, id))).for("share").limit(1);
     if (!h) throw new NotFoundError("Habit not found");
-    const { today } = await getLocalDay(actor, now ?? new Date(), tx);
+    const { today, timeZone } = await getLocalDay(actor, now ?? new Date(), tx);
     assertInWindow(localDate, today);
     if (h.archivedAt) throw new ConflictError("This habit is archived. Restore it to check in.");
+    // No check-ins for days before the habit existed (its creation day in the user's zone).
+    if (localDate < localTodayFor(timeZone, h.createdAt)) throw new BadRequestError("That day is before you created this habit.");
 
     let stored: string;
     let done: boolean;
@@ -85,10 +87,11 @@ export async function clearCheckIn(actor: Actor, habitId: string, date: string, 
   const id = parseHabitId(habitId);
   const localDate = parseDate(date);
   await db().transaction(async (tx) => {
-    const [h] = await tx.select({ id: habit.id }).from(habit).where(ownedBy(habit, actor, eq(habit.id, id))).for("share").limit(1);
+    const [h] = await tx.select({ id: habit.id, archivedAt: habit.archivedAt }).from(habit).where(ownedBy(habit, actor, eq(habit.id, id))).for("share").limit(1);
     if (!h) throw new NotFoundError("Habit not found");
     const { today } = await getLocalDay(actor, now ?? new Date(), tx);
     assertInWindow(localDate, today);
+    if (h.archivedAt) throw new ConflictError("This habit is archived. Restore it to change its check-ins.");
     await consumeRate(tx, actor.id, "checkin", CHECKINS_PER_HOUR, LIMIT_MESSAGE, { now });
     await tx.delete(checkIn).where(and(ownedBy(checkIn, actor, eq(checkIn.habitId, id), eq(checkIn.localDate, localDate))));
   });
