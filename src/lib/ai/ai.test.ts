@@ -3,7 +3,7 @@ import { z } from "zod";
 import { resetEnvCache } from "@/lib/env";
 import { AiError, MAX_PROMPT_CHARS, extractJson, generate } from "./index";
 
-const schema = z.object({ summary: z.string(), highlights: z.array(z.string()) });
+const schema = z.object({ summary: z.string(), highlights: z.array(z.string()).default([]) });
 
 const baseEnv = {
   DATABASE_URL: "postgres://unused",
@@ -41,14 +41,14 @@ describe("extractJson", () => {
 
 describe("generate", () => {
   it("serves the recorded answer in demo mode", async () => {
-    const result = await generate({ task: "summarize-items", system: "s", prompt: "p", schema });
+    const result = await generate({ task: "weekly-coach", system: "s", prompt: "p", schema });
     expect(result.demo).toBe(true);
-    expect(result.data.highlights.length).toBeGreaterThan(0);
+    expect(result.data.summary.length).toBeGreaterThan(0);
   });
 
   it("rejects oversized input before calling any model", async () => {
     await expect(
-      generate({ task: "summarize-items", system: "s", prompt: "x".repeat(MAX_PROMPT_CHARS + 1), schema }),
+      generate({ task: "weekly-coach", system: "s", prompt: "x".repeat(MAX_PROMPT_CHARS + 1), schema }),
     ).rejects.toMatchObject({ kind: "input_rejected" });
   });
 
@@ -63,7 +63,7 @@ describe("generate", () => {
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const result = await generate({ task: "summarize-items", system: "s", prompt: "p", schema });
+    const result = await generate({ task: "weekly-coach", system: "s", prompt: "p", schema });
     expect(result).toMatchObject({ demo: false, provider: "gemini", data: { summary: "live" } });
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain("generativelanguage.googleapis.com");
@@ -75,7 +75,7 @@ describe("generate", () => {
   it("falls back to demo when the provider hits its quota", async () => {
     setEnv({ AI_PROVIDER: "gemini", GEMINI_API_KEY: "test-key" });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 429 })));
-    const result = await generate({ task: "summarize-items", system: "s", prompt: "p", schema });
+    const result = await generate({ task: "weekly-coach", system: "s", prompt: "p", schema });
     expect(result.demo).toBe(true);
   });
 
@@ -83,7 +83,7 @@ describe("generate", () => {
     setEnv({ AI_PROVIDER: "gemini", GEMINI_API_KEY: "test-key", AI_FALLBACK_TO_DEMO: "false" });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 429 })));
     await expect(
-      generate({ task: "summarize-items", system: "s", prompt: "p", schema }),
+      generate({ task: "weekly-coach", system: "s", prompt: "p", schema }),
     ).rejects.toMatchObject({ kind: "quota" });
   });
 
@@ -98,7 +98,7 @@ describe("generate", () => {
       ),
     );
     await expect(
-      generate({ task: "summarize-items", system: "s", prompt: "p", schema }),
+      generate({ task: "weekly-coach", system: "s", prompt: "p", schema }),
     ).rejects.toMatchObject({ kind: "invalid_output" });
   });
 });
@@ -108,7 +108,7 @@ describe("missing provider key", () => {
     setEnv({ AI_PROVIDER: "gemini" });
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
-    const result = await generate({ task: "summarize-items", system: "s", prompt: "p", schema });
+    const result = await generate({ task: "weekly-coach", system: "s", prompt: "p", schema });
     expect(result.demo).toBe(true);
     expect(result.provider).toBe("demo");
     expect(fetchSpy).not.toHaveBeenCalled();

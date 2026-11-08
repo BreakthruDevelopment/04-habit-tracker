@@ -1,0 +1,28 @@
+/** Constants shared by the schema, the data layer and (later) the UI. No imports, so the schema can use it. */
+
+export const HABIT_KINDS = ["check", "numeric"] as const;
+export type HabitKind = (typeof HABIT_KINDS)[number];
+
+export const HABIT_NAME_MAX = 60;
+export const HABIT_UNIT_MAX = 16;
+/** A daily target or a check-in value must be above 0 and at most this. */
+export const MAX_VALUE = 100_000;
+export const MAX_ACTIVE_HABITS = 20;
+export const MAX_TOTAL_HABITS = 50;
+/** Check-ins may be written for today and this many days back. */
+export const BACKFILL_DAYS = 7;
+
+export const COACH_MODES = ["live", "demo", "skipped", "fallback"] as const;
+export const DAILY_USAGE_KINDS = ["push", "coach", "demo_load"] as const;
+export const RATE_KINDS = ["checkin", "habit_write", "subscribe", "test_push", "coach", "tz_change", "demo_load"] as const;
+
+/** Reminder times are 05:00 to 21:00 in 15-minute steps. */
+export const REMINDER_MIN_MINUTES = 5 * 60;
+export const REMINDER_MAX_MINUTES = 21 * 60;
+export const REMINDER_STEP_MINUTES = 15;
+
+/** Zone changes allowed per rolling 24 hours. */
+export const TZ_CHANGES_PER_DAY = 3;
+export const DAY_SECONDS = 24 * 60 * 60;
+
+export const MAX_PUSH_DEVICES = 5;

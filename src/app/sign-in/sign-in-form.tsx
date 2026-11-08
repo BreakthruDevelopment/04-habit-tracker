@@ -26,7 +26,7 @@ export function SignInForm() {
       setError(result.error.message ?? "That didn't work. Check your details and try again.");
       return;
     }
-    router.push("/dashboard");
+    router.push("/today");
     router.refresh();
   }
 

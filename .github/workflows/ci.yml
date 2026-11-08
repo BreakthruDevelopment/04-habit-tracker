@@ -55,7 +55,7 @@ jobs:
         run: |
           cp -r public .next/standalone/
           cp -r .next/static .next/standalone/.next/
-          PORT=3000 HOSTNAME=127.0.0.1 nohup node .next/standalone/server.js > app.log 2>&1 &
+          REMINDER_SCHEDULER=off PORT=3000 HOSTNAME=127.0.0.1 nohup node .next/standalone/server.js > app.log 2>&1 &
           for i in $(seq 1 30); do curl -fsS localhost:3000/api/health && break; sleep 1; done
       - name: End-to-end smoke test
         run: bash scripts/smoke.sh

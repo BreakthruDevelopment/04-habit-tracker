@@ -8,6 +8,20 @@
       "when": 1793690781030,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794180220433,
+      "tag": "0001_habits-schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794180221213,
+      "tag": "0002_checkin-covering-index",
+      "breakpoints": true
     }
   ]
 }

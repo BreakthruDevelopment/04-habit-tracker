@@ -5,7 +5,7 @@ const pingDb = vi.fn();
 vi.mock("@/lib/db", () => ({ pingDb: () => pingDb() }));
 
 import { GET } from "@/app/api/health/route";
-import { migrateOnStart, migrationState } from "./migrate-on-start";
+import { migrateOnStart, migrationState, whenMigrated } from "./migrate-on-start";
 
 const KEY = Symbol.for("30apps.migrationState");
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -74,5 +74,47 @@ describe("/api/health", () => {
   it("is 503 when the database is unreachable", async () => {
     pingDb.mockResolvedValue(false);
     expect((await GET()).status).toBe(503);
+  });
+});
+
+describe("whenMigrated", () => {
+  const settled = async (p: Promise<void>) => {
+    let done = false;
+    void p.then(() => (done = true));
+    await flush();
+    return done;
+  };
+
+  it("resolves at once when migrations were skipped or aren't managed by this process", async () => {
+    expect(await settled(whenMigrated())).toBe(true); // state never set
+    const prev = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    await migrateOnStart();
+    process.env.DATABASE_URL = prev;
+    expect(migrationState()).toBe("skipped");
+    expect(await settled(whenMigrated())).toBe(true);
+  });
+
+  it("resolves at once after success", async () => {
+    await migrateOnStart({ runOnce: async () => {}, sleep: async () => {}, delays: [1] });
+    expect(await settled(whenMigrated())).toBe(true);
+  });
+
+  it("stays pending while migrations retry, then resolves when one succeeds", async () => {
+    let calls = 0;
+    const runOnce = vi.fn(async () => {
+      if (++calls < 3) throw new Error("db not ready");
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    await migrateOnStart({ runOnce, sleep: () => gate, delays: [1] });
+    expect(migrationState()).toBe("retrying");
+    const waiting = whenMigrated();
+    expect(await settled(waiting)).toBe(false);
+    // Let the background loop run its attempts; the second attempt still fails, the third succeeds.
+    release();
+    await waiting;
+    expect(migrationState()).toBe("ok");
+    expect(runOnce).toHaveBeenCalledTimes(3);
   });
 });
