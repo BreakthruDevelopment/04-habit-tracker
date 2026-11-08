@@ -1,0 +1,1 @@
+CREATE INDEX "check_in_local_date_idx" ON "check_in" USING btree ("local_date");

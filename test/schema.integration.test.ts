@@ -148,7 +148,10 @@ describe.skipIf(!url)("habit schema (Postgres)", () => {
         where owner_id = 's-bob' and local_date between '1999-02-01' and '1999-03-01' group by local_date`;
       const text = plan.map((r) => r["QUERY PLAN"]).join("\n");
       expect(text).not.toMatch(/Seq Scan on check_in/);
-      expect(text).toMatch(/check_in_owner_date_covering_idx/);
+      // This fixture is one owner holding every row, so the owner filter isn't selective and the planner may
+      // prefer the plain local_date index (added for the admin counts). With many owners, as in
+      // habits.integration.test.ts, the covering index is the one used.
+      expect(text).toMatch(/check_in_owner_date_covering_idx|check_in_local_date_idx/);
     });
 
     it("cascades: deleting a habit deletes its check-ins, deleting a user deletes everything", async () => {

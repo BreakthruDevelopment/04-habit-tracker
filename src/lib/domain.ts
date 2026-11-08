@@ -26,3 +26,14 @@ export const TZ_CHANGES_PER_DAY = 3;
 export const DAY_SECONDS = 24 * 60 * 60;
 
 export const MAX_PUSH_DEVICES = 5;
+
+/** Check-in writes (set or clear) allowed per user per rolling hour. */
+export const CHECKINS_PER_HOUR = 200;
+/** Habit writes (create, edit, archive, delete, reorder) allowed per user per rolling hour. */
+export const HABIT_WRITES_PER_HOUR = 120;
+/** Streaks and the heatmap look back this far. */
+export const STREAK_LOOKBACK_DAYS = 400;
+/** `GET /api/progress/week` accepts the current week and this many weeks before it, minus one (52 weeks in all). */
+export const PROGRESS_WEEKS = 52;
+export const HEATMAP_DAYS = 30;
+export const HEATMAP_MAX_DAYS = 90;

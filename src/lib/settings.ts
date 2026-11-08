@@ -2,7 +2,7 @@ import "server-only";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Actor } from "@/lib/auth/rbac";
-import { db, schema } from "@/lib/db";
+import { type Db, db, schema } from "@/lib/db";
 import {
   DAY_SECONDS,
   REMINDER_MAX_MINUTES,
@@ -13,7 +13,7 @@ import {
 import { BadRequestError } from "@/lib/errors";
 import { log } from "@/lib/log";
 import { ownedBy } from "@/lib/owned";
-import { normalizeTimeZone } from "@/lib/time";
+import { localTodayFor, normalizeTimeZone } from "@/lib/time";
 import { advisoryLock, consumeRate } from "@/lib/usage";
 
 /**
@@ -69,6 +69,14 @@ function present(row: typeof userSettings.$inferSelect): Settings {
   };
 }
 
+/** The actor's settings, or null when they haven't been created yet. Read-only: never writes. */
+export async function getSettings(actor: Actor): Promise<Settings | null> {
+  const [row] = await db().select().from(userSettings).where(ownedBy(userSettings, actor));
+  return row ? present(row) : null;
+}
+
+export const detectZoneSchema = z.object({ detectedZone: z.string().max(64) }).strict();
+
 /**
  * The actor's settings, created on first use. `detectedZone` is the browser's zone
  * (`Intl.DateTimeFormat().resolvedOptions().timeZone`); it is used only when the row is created, and
@@ -122,4 +130,19 @@ export async function updateSettings(actor: Actor, input: UpdateSettingsInput, n
       .returning();
     return present(row);
   });
+}
+
+/**
+ * The actor's time zone and today's date there, read from the stored settings (UTC if the row doesn't
+ * exist yet). Never throws on a stored zone it doesn't recognise (see `localTodayFor`). `executor` lets
+ * a caller read inside its own transaction.
+ */
+export async function getLocalDay(
+  actor: Actor,
+  now: Date,
+  executor: Pick<Db, "select"> = db(),
+): Promise<{ timeZone: string; today: string }> {
+  const [row] = await executor.select({ timeZone: userSettings.timeZone }).from(userSettings).where(ownedBy(userSettings, actor));
+  const timeZone = normalizeTimeZone(row?.timeZone) ?? "UTC";
+  return { timeZone, today: localTodayFor(timeZone, now) };
 }
