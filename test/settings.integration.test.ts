@@ -89,9 +89,24 @@ describe.skipIf(!url)("settings (Postgres)", () => {
         await settings.updateSettings(alice, { timeZone: "America/Denver" }, hours(i));
         await settings.updateSettings(alice, { reminderTime: i % 2 ? "08:00" : "09:15" }, hours(i));
       }
-      // An old spelling of the stored zone is the same zone.
-      await settings.updateSettings(alice, { timeZone: "America/Denver" }, hours(7));
       expect((await sql`select count(*)::int n from rate_event where user_id = ${alice.id}`)[0].n).toBe(0);
+    });
+
+    it("treats an old spelling of the stored zone as the same zone: no change, nothing spent", async () => {
+      await reset(alice.id);
+      await settings.getOrCreateSettings(alice, "Asia/Kolkata");
+      for (let i = 0; i < 5; i++) {
+        expect((await settings.updateSettings(alice, { timeZone: "Asia/Calcutta" }, hours(i))).timeZone).toBe("Asia/Kolkata");
+      }
+      expect((await sql`select count(*)::int n from rate_event where user_id = ${alice.id}`)[0].n).toBe(0);
+      expect((await sql`select time_zone from user_settings where user_id = ${alice.id}`)[0].time_zone).toBe("Asia/Kolkata");
+    });
+
+    it("reads an unrecognised stored zone as UTC instead of failing", async () => {
+      await reset(alice.id);
+      await settings.getOrCreateSettings(alice, "Asia/Tokyo");
+      await sql`update user_settings set time_zone = 'Old/Zone' where user_id = ${alice.id}`;
+      expect((await settings.getOrCreateSettings(alice)).timeZone).toBe("UTC");
     });
 
     it("counts concurrent changes correctly (no more than 3 get through)", async () => {

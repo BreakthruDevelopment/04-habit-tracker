@@ -82,11 +82,15 @@ const LEGACY_ZONES: Record<string, string> = {
   "America/Jujuy": "America/Argentina/Jujuy",
   "America/Louisville": "America/Kentucky/Louisville",
   "America/Mendoza": "America/Argentina/Mendoza",
+  "America/Montreal": "America/Toronto",
   "Asia/Calcutta": "Asia/Kolkata",
+  "Asia/Istanbul": "Europe/Istanbul",
   "Asia/Katmandu": "Asia/Kathmandu",
   "Asia/Rangoon": "Asia/Yangon",
   "Asia/Saigon": "Asia/Ho_Chi_Minh",
   "Atlantic/Faeroe": "Atlantic/Faroe",
+  "Etc/UTC": "UTC",
+  "Europe/Nicosia": "Asia/Nicosia",
   "Europe/Kiev": "Europe/Kyiv",
   "Pacific/Enderbury": "Pacific/Kanton",
   "Pacific/Ponape": "Pacific/Pohnpei",
@@ -145,6 +149,14 @@ export function localToday(tz: string, now: Date): string {
   const parts: Record<string, string> = {};
   for (const p of f.formatToParts(now)) parts[p.type] = p.value;
   return `${pad(Number(parts.year), 4)}-${parts.month}-${parts.day}`;
+}
+
+/**
+ * `localToday` for a zone read back from storage: never throws. A stored zone the runtime doesn't
+ * recognise (a row from an older tz database, hand-edited data) counts as UTC instead of failing the page.
+ */
+export function localTodayFor(storedZone: string | null | undefined, now: Date): string {
+  return localToday(normalizeTimeZone(storedZone) ?? "UTC", now);
 }
 
 // ---------------------------------------------------------------------------

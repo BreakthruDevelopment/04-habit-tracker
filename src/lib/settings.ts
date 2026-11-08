@@ -11,6 +11,7 @@ import {
   TZ_CHANGES_PER_DAY,
 } from "@/lib/domain";
 import { BadRequestError } from "@/lib/errors";
+import { log } from "@/lib/log";
 import { ownedBy } from "@/lib/owned";
 import { normalizeTimeZone } from "@/lib/time";
 import { advisoryLock, consumeRate } from "@/lib/usage";
@@ -56,8 +57,12 @@ export const updateSettingsSchema = z
 export type UpdateSettingsInput = z.input<typeof updateSettingsSchema>;
 
 function present(row: typeof userSettings.$inferSelect): Settings {
+  // A stored zone we no longer recognise is shown (and used) as UTC rather than failing the page.
+  // Logged without the user id or the zone, which would identify someone.
+  const timeZone = normalizeTimeZone(row.timeZone);
+  if (!timeZone) log.warn("settings.zone_unknown");
   return {
-    timeZone: row.timeZone,
+    timeZone: timeZone ?? "UTC",
     // Postgres `time` comes back as "HH:MM:SS".
     reminderTime: row.reminderTime ? row.reminderTime.slice(0, 5) : null,
     updatedAt: row.updatedAt,

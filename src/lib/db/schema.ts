@@ -214,6 +214,7 @@ export const pushSubscription = pgTable(
     check("push_subscription_endpoint_len", sql`char_length(${t.endpoint}) between 1 and 1024`),
     check("push_subscription_p256dh_chk", sql`${t.p256dh} ~ '^[A-Za-z0-9_-]{87}$'`),
     check("push_subscription_auth_chk", sql`${t.auth} ~ '^[A-Za-z0-9_-]{22}$'`),
+    check("push_subscription_key_id_chk", sql`${t.vapidKeyId} ~ '^[0-9a-f]{8}$'`),
     check("push_subscription_label_len", sql`char_length(${t.deviceLabel}) between 1 and 60`),
     check("push_subscription_failures_chk", sql`${t.failureCount} >= 0`),
   ],
@@ -239,6 +240,7 @@ export const coachSummary = pgTable(
     primaryKey({ columns: [t.userId, t.isoWeek] }),
     check("coach_summary_week_chk", sql`${t.isoWeek} ~ '^[0-9]{4}-W(0[1-9]|[1-4][0-9]|5[0-3])$'`),
     check("coach_summary_mode_chk", sql`${t.mode} in (${list(COACH_MODES)})`),
+    check("coach_summary_hash_chk", sql`${t.inputHash} ~ '^[0-9a-f]{64}$'`),
     check("coach_summary_regen_chk", sql`${t.regenerations} between 0 and 2`),
   ],
 );
@@ -256,7 +258,10 @@ export const appSettings = pgTable(
     vapidKeyId: char("vapid_key_id", { length: 8 }).notNull(),
     createdAt: ts("created_at").notNull().defaultNow(),
   },
-  (t) => [check("app_settings_single_row", sql`${t.id} = 1`)],
+  (t) => [
+    check("app_settings_single_row", sql`${t.id} = 1`),
+    check("app_settings_key_id_chk", sql`${t.vapidKeyId} ~ '^[0-9a-f]{8}$'`),
+  ],
 );
 
 /** App-wide daily counters (one row per UTC day and kind) for the free-tier caps. */

@@ -9,6 +9,7 @@ import {
   isoWeekday,
   isoWeeksInYear,
   localToday,
+  localTodayFor,
   normalizeTimeZone,
   parseIsoWeek,
   shiftIsoWeek,
@@ -204,5 +205,22 @@ describe("ISO weeks", () => {
     expect(shiftIsoWeek("2026-W53", 1)).toBe("2027-W01");
     expect(shiftIsoWeek("2027-W01", -1)).toBe("2026-W53");
     expect(shiftIsoWeek("2025-W52", 1)).toBe("2026-W01");
+  });
+});
+
+describe("legacy zone spellings and stored zones", () => {
+  it("maps the old spellings Postgres lacks or Node omits to names both know", () => {
+    expect(normalizeTimeZone("Etc/UTC")).toBe("UTC");
+    expect(normalizeTimeZone("Asia/Istanbul")).toBe("Europe/Istanbul");
+    expect(normalizeTimeZone("America/Montreal")).toBe("America/Toronto");
+    expect(normalizeTimeZone("Europe/Nicosia")).toBe("Asia/Nicosia");
+  });
+
+  it("localTodayFor never throws: an unknown stored zone counts as UTC", () => {
+    const now = new Date("2026-11-08T23:30:00Z");
+    expect(localTodayFor("Old/Zone", now)).toBe("2026-11-08");
+    expect(localTodayFor("", now)).toBe("2026-11-08");
+    expect(localTodayFor(null, now)).toBe("2026-11-08");
+    expect(localTodayFor("Asia/Calcutta", now)).toBe("2026-11-09");
   });
 });

@@ -148,7 +148,7 @@ describe.skipIf(!url)("habit schema (Postgres)", () => {
         where owner_id = 's-bob' and local_date between '1999-02-01' and '1999-03-01' group by local_date`;
       const text = plan.map((r) => r["QUERY PLAN"]).join("\n");
       expect(text).not.toMatch(/Seq Scan on check_in/);
-      expect(text).toMatch(/check_in_owner_date_covering_idx|check_in_habit_id_local_date_pk/);
+      expect(text).toMatch(/check_in_owner_date_covering_idx/);
     });
 
     it("cascades: deleting a habit deletes its check-ins, deleting a user deletes everything", async () => {
@@ -203,6 +203,14 @@ describe.skipIf(!url)("habit schema (Postgres)", () => {
       await expect(insertSub(sub({ endpoint: "https://x/3", auth: "a".repeat(23) }))).rejects.toThrow(/auth_chk/);
       await expect(insertSub(sub({ endpoint: "https://x/4", p256dh: "+".repeat(87) }))).rejects.toThrow(/p256dh_chk/);
       await expect(insertSub(sub({ endpoint: "https://x/" + "a".repeat(1100) }))).rejects.toThrow(/endpoint_len/);
+    });
+
+    it("requires lowercase hex for vapid_key_id and input_hash", async () => {
+      for (const bad of ["ABCD1234", "abcd123", "abcd123g", "abcd12345"]) {
+        await expect(insertSub(sub({ endpoint: `https://x/k${bad}`, vapid_key_id: bad })), bad).rejects.toThrow(/key_id_chk|value too long/);
+      }
+      await expect(sql`insert into app_settings (id, vapid_public_key, vapid_private_key, vapid_key_id) values (1, 'p', 'q', 'ZZZZZZZZ')`).rejects.toThrow(/app_settings_key_id_chk/);
+      await expect(sql`insert into coach_summary (user_id, iso_week, data, stats, mode, input_hash) values ('s-alice', '2026-W10', '{}', '{}', 'demo', ${"A".repeat(64)})`).rejects.toThrow(/coach_summary_hash_chk/);
     });
 
     it("keeps one coach summary per user per ISO week, and only real week labels", async () => {

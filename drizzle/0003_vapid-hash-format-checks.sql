@@ -1,0 +1,3 @@
+ALTER TABLE "app_settings" ADD CONSTRAINT "app_settings_key_id_chk" CHECK ("app_settings"."vapid_key_id" ~ '^[0-9a-f]{8}$');--> statement-breakpoint
+ALTER TABLE "coach_summary" ADD CONSTRAINT "coach_summary_hash_chk" CHECK ("coach_summary"."input_hash" ~ '^[0-9a-f]{64}$');--> statement-breakpoint
+ALTER TABLE "push_subscription" ADD CONSTRAINT "push_subscription_key_id_chk" CHECK ("push_subscription"."vapid_key_id" ~ '^[0-9a-f]{8}$');
