@@ -20,8 +20,31 @@ export function migrationState(): MigrationState | undefined {
   return (globalThis as Holder)[KEY];
 }
 
+const WAITERS = Symbol.for("30apps.migrationWaiters");
+type WaiterHolder = { [WAITERS]?: (() => void)[] };
+
 function setState(state: MigrationState) {
   (globalThis as Holder)[KEY] = state;
+  if (state === "ok" || state === "skipped") {
+    const holder = globalThis as WaiterHolder;
+    const waiters = holder[WAITERS] ?? [];
+    holder[WAITERS] = [];
+    for (const resolve of waiters) resolve();
+  }
+}
+
+/**
+ * Resolves once migrations have succeeded, and at once when they were skipped or this process never
+ * manages them (MIGRATE_ON_START off), so nothing waits forever. While they are running or retrying
+ * in the background it stays pending. Work that needs the schema (the reminder scheduler) starts after it.
+ */
+export function whenMigrated(): Promise<void> {
+  const state = migrationState();
+  if (state !== "running" && state !== "retrying") return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const holder = globalThis as WaiterHolder;
+    (holder[WAITERS] ??= []).push(resolve);
+  });
 }
 
 type Deps = {

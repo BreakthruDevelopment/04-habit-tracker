@@ -4,10 +4,14 @@
  * Each app adds a fixture for each AI task it defines.
  */
 export const demoFixtures: Record<string, unknown> = {
-  "summarize-items": {
+  // Issue 6 owns the weekly coach; this is its recorded answer (no digits, so it passes the number check).
+  "weekly-coach": {
+    headline: "A steady week with real momentum",
     summary:
-      "You have a few open items. The most recent ones focus on setup work; nothing looks overdue.",
-    highlights: ["Setup tasks are the largest group", "No items are flagged urgent"],
+      "Demo summary (recorded, not from a live model): you showed up on most days and kept your best streak going. Midweek was your strongest stretch.",
+    wins: [{ habit: "H1", text: "You reached your weekly goal." }],
+    focus: [{ habit: "H2", text: "Try pairing this one with something you already do every day." }],
+    nextStep: "Pick the hardest day next week and plan a smaller version of each habit for it.",
   },
 };
 

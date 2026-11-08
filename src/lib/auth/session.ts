@@ -27,10 +27,10 @@ export async function requireUserOrRedirect(): Promise<CurrentUser> {
   return user;
 }
 
-/** For pages: signed-in users without the role go to the dashboard. */
+/** For pages: signed-in users without the role go to Today. */
 export async function requireRoleOrRedirect(role: Role): Promise<CurrentUser> {
   const user = await requireUserOrRedirect();
-  if (role === "admin" && user.role !== "admin") redirect("/dashboard");
+  if (role === "admin" && user.role !== "admin") redirect("/today");
   return user;
 }
 

@@ -13,6 +13,7 @@ export default defineConfig({
     environment: "node",
     // Integration files share one database and run migrations; keep them from racing.
     fileParallelism: false,
+    globalSetup: ["test/global-setup.ts"],
     include: ["src/**/*.test.ts", "test/**/*.test.ts"],
     coverage: { provider: "v8", include: ["src/lib/**"] },
   },
