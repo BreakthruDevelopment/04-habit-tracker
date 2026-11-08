@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+/*
+ * Breakthru design tokens (see ai-dev-os/design/README.md). Components use these
+ * through Tailwind (bg-surface, text-muted, border-border, bg-accent, ...), never raw colors.
+ * Light is the default; dark follows the system setting. Status colors keep their meaning in both.
+ */
+:root {
+  --background: #f5f6f8;
+  --surface: #ffffff;
+  --foreground: #16202b;
+  --muted: #566170;
+  --border: #dde1e8;
+  --border-strong: #7d8796; /* 3:1 against surface, for field borders */
+  --accent: #005fb1; /* Breakthru blue, sampled from the logo */
+  --accent-foreground: #ffffff;
+  --accent-soft: #e6f0fa;
+
+  --danger: #b42318;
+  --success: #177533;
+
+  --live: #177533;
+  --live-soft: #e2f4e7;
+  --building: #8a5300;
+  --building-soft: #fcefd3;
+  --blocked: #b42318;
+  --blocked-soft: #fde7e4;
+  --idle: #4a5563;
+  --idle-soft: #eceff3;
+
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0e1217;
+    --surface: #161b22;
+    --foreground: #e8ecf2;
+    --muted: #9ba5b3;
+    --border: #2a323d;
+    --border-strong: #6b7686;
+    --accent: #5aa9f0;
+    --accent-foreground: #06121f;
+    --accent-soft: #14283d;
+
+    --danger: #f27a6e;
+    --success: #4cc38a;
+
+    --live: #4cc38a;
+    --live-soft: #123222;
+    --building: #e8b44f;
+    --building-soft: #35290f;
+    --blocked: #f27a6e;
+    --blocked-soft: #3b1b18;
+    --idle: #9ba5b3;
+    --idle-soft: #232a33;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-page: var(--background);
+  --color-surface: var(--surface);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-live: var(--live);
+  --color-live-soft: var(--live-soft);
+  --color-building: var(--building);
+  --color-building-soft: var(--building-soft);
+  --color-blocked: var(--blocked);
+  --color-blocked-soft: var(--blocked-soft);
+  --color-idle: var(--idle);
+  --color-idle-soft: var(--idle-soft);
+  --radius-card: var(--radius);
+  --font-sans: var(--font-public-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial,
+    sans-serif;
+  --font-display: var(--font-newsreader), ui-serif, Georgia, "Times New Roman", serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
