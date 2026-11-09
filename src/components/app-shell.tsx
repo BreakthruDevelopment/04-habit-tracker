@@ -35,7 +35,7 @@ export async function AppShell({ children, nav }: { children: ReactNode; nav?: R
   return (
     <>
       {user && <PushRegistrar />}
-      {user && <SettingsBootstrap />}
+      {user && <SettingsBootstrap userId={user.id} />}
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-20 focus:rounded-card focus:bg-surface focus:px-3 focus:py-2"

@@ -109,39 +109,50 @@ export function CoachPanel({ week }: { week: string }) {
     void load();
   }, [load]);
 
+  /** After a 409 another request is writing the summary: wait for it with reads, never a second POST. */
+  async function waitForSummary(): Promise<boolean> {
+    const before = view?.summary?.generatedAt ?? null;
+    for (let i = 0; i < MAX_RETRIES; i++) {
+      await new Promise((r) => setTimeout(r, RETRY_MS));
+      if (!alive.current) return true;
+      const got = await getJson(`/api/coach?week=${encodeURIComponent(week)}`);
+      if (got.ok) {
+        const v = got.data as CoachView;
+        if (v.summary && v.summary.generatedAt !== before) {
+          setView(v);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   async function generate() {
     setBusy(true);
     setNotice(null);
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      const res = await postCoach(week);
+    const res = await postCoach(week);
+    if (!alive.current) return;
+    if (res.ok) {
+      const r = res.body as CoachView & { cached?: boolean };
+      setView({ week: r.week, summary: r.summary, refreshesLeft: r.refreshesLeft });
+      setNotice({ kind: "ok", text: r.cached ? "Your summary is up to date." : "Summary ready." });
+    } else if (res.status === 409) {
+      setNotice({ kind: "ok", text: "Your summary is being written. One moment…" });
+      const done = await waitForSummary();
       if (!alive.current) return;
-      if (res.ok) {
-        const r = res.body as CoachView & { cached?: boolean };
-        setView({ week: r.week, summary: r.summary, refreshesLeft: r.refreshesLeft });
-        setNotice({ kind: "ok", text: r.cached ? "Nothing has changed since the last summary, so it was kept and no refresh was used." : "Summary ready." });
-        break;
-      }
-      if (res.status === 409 && attempt < MAX_RETRIES) {
-        setNotice({ kind: "ok", text: "Your summary is being written. One moment…" });
-        await new Promise((r) => setTimeout(r, RETRY_MS));
-        continue;
-      }
-      if (res.status === 429) {
-        // The route sends the stored summary along with the reason, so keep showing it.
-        const b = res.body as Partial<CoachView>;
-        if (b.summary) setView({ week: b.week ?? week, summary: b.summary, refreshesLeft: b.refreshesLeft ?? 0 });
-        else if (b.refreshesLeft !== undefined) setView((v) => (v ? { ...v, refreshesLeft: b.refreshesLeft ?? 0 } : v));
-        setNotice({ kind: "error", text: res.message });
-      } else if (res.status === 502) {
-        setNotice({ kind: "error", text: "The coach couldn't answer right now. Nothing was used, so you can try again." });
-      } else if (res.status === 409) {
-        setNotice({ kind: "error", text: "Your summary is still being written. Try again in a moment." });
-      } else {
-        setNotice({ kind: "error", text: res.message });
-      }
-      break;
+      setNotice(done ? { kind: "ok", text: "Summary ready." } : { kind: "error", text: "Your summary is still being written. Try again in a moment." });
+    } else if (res.status === 429) {
+      // The route sends the stored summary along with the reason, so keep showing it.
+      const b = res.body as Partial<CoachView>;
+      if (b.summary) setView({ week: b.week ?? week, summary: b.summary, refreshesLeft: b.refreshesLeft ?? 0 });
+      else if (b.refreshesLeft !== undefined) setView((v) => (v ? { ...v, refreshesLeft: b.refreshesLeft ?? 0 } : v));
+      setNotice({ kind: "error", text: res.message });
+    } else if (res.status === 502) {
+      setNotice({ kind: "error", text: "The coach couldn't answer right now. Nothing was used, so you can try again." });
+    } else {
+      setNotice({ kind: "error", text: res.message });
     }
-    if (alive.current) setBusy(false);
+    setBusy(false);
   }
 
   const summary = view?.summary ?? null;

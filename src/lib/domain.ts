@@ -27,6 +27,9 @@ export const DAY_SECONDS = 24 * 60 * 60;
 
 export const MAX_PUSH_DEVICES = 5;
 
+/** App-wide demo workspace loads allowed per UTC day. */
+export const DEMO_LOADS_PER_DAY = 5;
+
 /** Check-in writes (set or clear) allowed per user per rolling hour. */
 export const CHECKINS_PER_HOUR = 200;
 /** Habit writes (create, edit, archive, delete, reorder) allowed per user per rolling hour. */

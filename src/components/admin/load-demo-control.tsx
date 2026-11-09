@@ -64,11 +64,9 @@ export function LoadDemoControl() {
           {error}
         </p>
       )}
-      {message && (
-        <p role="status" className="break-words text-sm">
-          {message}
-        </p>
-      )}
+      <p role="status" className="break-words text-sm">
+        {message}
+      </p>
     </div>
   );
 }

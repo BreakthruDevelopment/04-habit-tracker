@@ -3,7 +3,7 @@ import { and, asc, between, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { type Actor, ForbiddenError } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
-import { HEATMAP_DAYS, HEATMAP_MAX_DAYS, PROGRESS_WEEKS, STREAK_LOOKBACK_DAYS } from "@/lib/domain";
+import { DEMO_LOADS_PER_DAY, HEATMAP_DAYS, HEATMAP_MAX_DAYS, PROGRESS_WEEKS, STREAK_LOOKBACK_DAYS } from "@/lib/domain";
 import { env } from "@/lib/env";
 import { BadRequestError } from "@/lib/errors";
 import { type HabitView, getHabit, parseHabitId, toHabitView, trimNumeric } from "@/lib/habits";
@@ -440,7 +440,7 @@ export async function adminCounts(actor: Actor): Promise<AdminCounts> {
     usage: [
       { kind: "push", used: r.remindersSentToday, cap: e.PUSH_DAILY_CAP },
       { kind: "coach", used: r.coachUsed, cap: e.COACH_DAILY_CAP },
-      { kind: "demo_load", used: r.demoUsed, cap: null },
+      { kind: "demo_load", used: r.demoUsed, cap: DEMO_LOADS_PER_DAY },
     ],
   };
 }

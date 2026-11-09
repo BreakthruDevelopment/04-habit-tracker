@@ -72,17 +72,22 @@ export function PushPanel() {
   const [busy, setBusy] = useState<"" | "enable" | "disable" | "test" | string>("");
   const [notice, setNotice] = useState<Notice | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<PushState> => {
     const [s, sub, config, list] = await Promise.all([readPushState(), currentSubscription(), getJson("/api/push/config"), getJson("/api/push/subscriptions")]);
-    setState(s);
     setThisEndpoint(sub?.endpoint ?? null);
     if (config.ok) setAvailable((config.data as { enabled: boolean }).enabled !== false);
+    let shown = s;
     if (list.ok) {
-      setDevices((list.data as { devices: Device[] }).devices);
+      const found = (list.data as { devices: Device[] }).devices;
+      setDevices(found);
       setDevicesError("");
+      // "On" means the server knows this browser's subscription; otherwise offer to turn it on again.
+      if (s === "on" && !found.some((d) => d.endpoint === sub?.endpoint)) shown = "granted";
     } else {
       setDevicesError(list.message);
     }
+    setState(shown);
+    return shown;
   }, []);
 
   useEffect(() => {
@@ -106,17 +111,17 @@ export function PushPanel() {
   // Called only from the button's onClick: the browser's permission prompt needs a tap.
   const turnOn = () =>
     run("enable", async () => {
-      const next = await enablePush();
-      await load();
+      await enablePush();
+      const next = await load();
       if (next === "denied") setNotice({ kind: "error", text: "Notifications are blocked for this site. See the steps below to allow them." });
       else if (next === "on") setNotice({ kind: "ok", text: "Reminders are on for this device." });
     });
 
   const turnOff = () =>
     run("disable", async () => {
-      await disablePush();
+      const ok = await disablePush({ strict: true });
       await load();
-      setNotice({ kind: "ok", text: "Reminders are off for this device." });
+      setNotice(ok ? { kind: "ok", text: "Reminders are off for this device." } : { kind: "error", text: "Couldn't turn reminders off. Check your connection and try again." });
     });
 
   const sendTest = () =>
@@ -136,7 +141,10 @@ export function PushPanel() {
   const remove = (d: Device) =>
     run(d.id, async () => {
       if (d.endpoint === thisEndpoint) {
-        await disablePush();
+        if (!(await disablePush({ strict: true }))) {
+          setNotice({ kind: "error", text: "Couldn't remove this device. Check your connection and try again." });
+          return;
+        }
       } else {
         const res = await sendJson("DELETE", "/api/push/subscriptions", { id: d.id }, AbortSignal.timeout(10_000));
         // 404 means it was already gone, which is what the user wanted.

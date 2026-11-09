@@ -7,6 +7,7 @@ import { demoFixtures } from "@/lib/ai/demo";
 import { auth } from "@/lib/auth";
 import { type Actor, assertCan } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
+import { DEMO_LOADS_PER_DAY } from "@/lib/domain";
 import { DEMO_EMAIL_DOMAIN, MARKER } from "@/lib/demo-identity";
 import { demoSeedConfig } from "@/lib/demo-seed-config";
 import { ConflictError, TooManyRequestsError } from "@/lib/errors";
@@ -22,7 +23,7 @@ const emailFor = (name: Person) => `${name.toLowerCase()}@${DEMO_EMAIL_DOMAIN}`;
 const optionsSchema = z.discriminatedUnion("mode", [z.object({ mode: z.literal("admin") }).strict(), z.object({ mode: z.literal("cli") }).strict()]);
 
 /** One admin load per minute and this many per UTC day, for the whole app. */
-export const DEMO_LOADS_PER_DAY = 5;
+export { DEMO_LOADS_PER_DAY };
 
 /** Days of history per habit, counting today as day 0: a little over eight weeks. */
 export const DEMO_HISTORY_DAYS = 60;

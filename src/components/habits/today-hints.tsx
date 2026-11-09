@@ -55,7 +55,7 @@ export function TodayHints({ checkIns, reminderSet }: { checkIns: number; remind
       <p className="min-w-0 break-words text-base">
         {kind === "install"
           ? "Reminders on iPhone need Habits on your Home Screen: tap Share, then Add to Home Screen."
-          : "Want a nudge at 8:00 PM when something is still open?"}
+          : "Want a nudge when something is still open? Pick a reminder time."}
       </p>
       <div className="flex shrink-0 flex-col gap-3 sm:flex-row">
         <Link href="/settings" className={`${buttonSecondary} w-full sm:w-auto`}>
