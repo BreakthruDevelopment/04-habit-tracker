@@ -117,6 +117,12 @@ req "$JAR_B" PUT "/api/habits/$yes_id/check-ins/$today" '{}'; expect 404 "anothe
 req "$JAR_B" GET "/api/progress/heatmap?habitId=$yes_id"; expect 404 "another user's heatmap"
 pass "another user gets 404 on the habit"
 
+# The demo loader is admin-only: signed-out is 401, a plain user is 403, and nothing is created.
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "origin: $BASE_URL" "$BASE_URL/api/admin/demo")
+[ "$code" = "401" ] || fail "signed-out POST /api/admin/demo should be 401, got $code"
+req "$JAR_A" POST /api/admin/demo; expect 403 "plain user loading the demo workspace"
+pass "demo workspace loader is closed to signed-out and plain users"
+
 req "$JAR_A" GET /api/progress/week; expect 200 "week summary"
 echo "$BODY" | jq -e '(.week | test("^[0-9]{4}-W[0-9]{2}$")) and (.habits | length) == 2 and .totals.doneCheckIns == 2' >/dev/null || fail "week summary shape: $BODY"
 week=$(echo "$BODY" | jq -r .week)

@@ -27,6 +27,14 @@ describe("demoSeedConfig", () => {
   });
 });
 
+describe("demoSeedConfig (Cloud SQL)", () => {
+  it("refuses a Cloud SQL socket database", () => {
+    for (const DATABASE_URL of ["postgres://u:p@/db?host=/cloudsql/proj:us-central1:inst", "postgres://u:p@/db?host=%2Fcloudsql%2Fproj%3Aus%3Ainst"]) {
+      expect(() => demoSeedConfig({ ...ok, DATABASE_URL })).toThrow(/production database/);
+    }
+  });
+});
+
 describe("isDemoEmail", () => {
   it("matches the demo domain only", () => {
     expect(isDemoEmail("ada@demo.breakthru.test")).toBe(true);

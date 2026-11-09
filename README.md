@@ -57,6 +57,18 @@ pnpm dev                             # http://localhost:3000
 To make yourself an admin: sign up, then `SEED_ADMIN_EMAIL=you@example.com SEED_ADMIN_PASSWORD=... pnpm db:seed`
 while the app is running.
 
+## Demo data
+
+Three fictional users (Ada in America/Denver, Ben in Europe/London, Cleo in Asia/Kolkata, at `@demo.breakthru.test`)
+own 14 habits, yes/no and numeric, with about 60 days of check-ins keyed to each user's local date, a long and a broken
+streak, and a pre-filled last-week coach summary (`mode: demo`, no model call). No push subscriptions are created.
+
+- Locally: `DEMO_SEED=yes APP_URL=http://localhost:3000 DEMO_PASSWORD=<10+ chars> pnpm seed:demo` (Ada becomes an admin
+  with that password). It refuses `app4.breakthruventures.ai`, `*.sslip.io`, a database host `postgres` and Cloud SQL sockets.
+- Live: an admin posts to `POST /api/admin/demo` (no body, same-origin; 1 per minute and 5 per UTC day app-wide).
+  Demo users get random passwords nobody knows and no admin role. Either way a reload replaces only the demo
+  users' habits, check-ins and summaries, never a real user's.
+
 ## Design system
 
 Every app shares the Breakthru look (guide and concept: `ai-dev-os/design/`). Tokens live in `src/app/globals.css`
