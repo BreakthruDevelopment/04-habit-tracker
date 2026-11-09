@@ -5,13 +5,14 @@ import { requireUserOrRedirect } from "@/lib/auth/session";
 import { isDemoEmail } from "@/lib/demo-identity";
 import { fullDay } from "@/lib/format";
 import { today } from "@/lib/progress";
+import { getSettings } from "@/lib/settings";
 
 export const metadata: Metadata = { title: "Today" };
 export const dynamic = "force-dynamic";
 
 export default async function TodayPage() {
   const user = await requireUserOrRedirect();
-  const view = await today(user);
+  const [view, settings] = await Promise.all([today(user), getSettings(user)]);
   const items: TodayItem[] = view.habits.map((h) => ({
     id: h.id,
     name: h.name,
@@ -32,7 +33,7 @@ export default async function TodayPage() {
         description={`Hello, ${user.name}. Check off what you've done; changes save as you tap.`}
         actions={isDemoEmail(user.email) ? <DemoBadge /> : undefined}
       />
-      <TodayList date={view.date} initial={items} />
+      <TodayList date={view.date} initial={items} reminderSet={settings?.reminderTime != null} />
     </>
   );
 }

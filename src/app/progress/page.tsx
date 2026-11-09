@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { CoachPanel } from "@/components/coach/coach-panel";
 import { FreeTierBanner } from "@/components/habits/free-tier-banner";
 import { Heatmap } from "@/components/habits/heatmap";
 import { type Dot, WeekDots } from "@/components/habits/week-dots";
@@ -212,8 +213,9 @@ export default async function ProgressPage({ searchParams }: { searchParams: Pro
         </Panel>
       </div>
 
-      {/* Weekly coach panel: issue 7 renders it here. */}
-      <div data-slot="coach-panel" />
+      <div data-slot="coach-panel">
+        <CoachPanel key={summary.week} week={summary.week} />
+      </div>
     </>
   );
 }

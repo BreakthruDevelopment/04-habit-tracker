@@ -39,3 +39,16 @@ export function stepFor(target: number): number {
 export function addAmount(a: number, b: number): string {
   return String(Math.round((a + b) * 100) / 100);
 }
+
+/** "20:00" as "8:00 PM". */
+export function clockLabel(hhmm: string): string {
+  const [h, m] = hhmm.split(":").map(Number);
+  return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+}
+
+/** Reminder choices: 05:00 to 21:00 in 15-minute steps, matching the server rule. */
+export function reminderOptions(): string[] {
+  const out: string[] = [];
+  for (let m = 5 * 60; m <= 21 * 60; m += 15) out.push(`${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`);
+  return out;
+}

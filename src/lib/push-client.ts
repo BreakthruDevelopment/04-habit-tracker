@@ -83,7 +83,7 @@ function toKey(base64url: string): Uint8Array<ArrayBuffer> {
  * Resolves to the new state; throws Error with a plain-words message when the server refuses.
  */
 export async function enablePush(): Promise<PushState> {
-  const config = (await (await fetch("/api/push/config")).json()) as { enabled: boolean; publicKey: string | null };
+  const config = (await (await fetch("/api/push/config", { signal: AbortSignal.timeout(10_000) })).json()) as { enabled: boolean; publicKey: string | null };
   if (!config.enabled || !config.publicKey) throw new Error("Reminders aren't available right now.");
   const reg = (await registerServiceWorker()) ?? undefined;
   if (!reg) throw new Error("This browser can't show reminders.");
@@ -95,6 +95,7 @@ export async function enablePush(): Promise<PushState> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(sub.toJSON()),
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };

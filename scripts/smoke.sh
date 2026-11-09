@@ -44,6 +44,8 @@ pass "two users signed up"
 for jar in "$JAR_A" "$JAR_B"; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" "$BASE_URL/today")
   [ "$code" = "200" ] || fail "signed-in /today should be 200, got $code"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" "$BASE_URL/settings")
+  [ "$code" = "200" ] || fail "signed-in /settings should be 200, got $code"
   code=$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" "$BASE_URL/admin")
   [ "$code" = "307" ] || fail "a plain user opening /admin should be redirected (307), got $code"
 done
