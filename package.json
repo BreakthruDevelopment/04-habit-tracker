@@ -13,6 +13,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.mts",
     "db:seed": "tsx scripts/seed.mts",
+    "seed:demo": "node --conditions=react-server --import tsx scripts/seed-demo.mts",
     "smoke": "bash scripts/smoke.sh",
     "eval:coach": "AI_PROVIDER=gemini vitest run test/ai-evals.test.ts"
   },
