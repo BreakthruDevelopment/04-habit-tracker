@@ -426,6 +426,76 @@ describe.skipIf(!url)("weekly coach (Postgres)", () => {
       expect(Number((await sql`select count(*) n from coach_claim`)[0].n)).toBe(0);
     });
 
+    it("unchecking everything during a paid call cannot dodge the cap, over 8 rounds", async () => {
+      const h = await habitWith(ada, "Read", [], { kind: "numeric", unit: "pages", dailyTarget: "100" });
+      vi.resetModules();
+      const other = await import("@/lib/coach");
+      state.generate.mockImplementation(async (req: never) => {
+        await new Promise((r) => setTimeout(r, 300));
+        return actualGenerate(req);
+      });
+      const outcomes: string[] = [];
+      for (let round = 1; round <= 8; round++) {
+        await checkins.setCheckIn(ada, h.id, "2026-11-02", { value: String(round) }, NOW); // different data every round
+        const slow = post(ada).then(
+          (r) => `ok:${r.summary?.mode}`,
+          (e) => `err:${(e as { reason?: string; status?: number }).reason ?? (e as { status?: number }).status}`,
+        );
+        await new Promise((r) => setTimeout(r, 100)); // the model call is now in flight
+        await checkins.clearCheckIn(ada, h.id, "2026-11-02", NOW);
+        // The same week, empty, mid-call: it must not write "skipped" under the running call.
+        await other.generateCoach(ada, null, NOW).catch(() => undefined);
+        const [mid] = await sql`select mode from coach_summary where user_id = ${ada.id}`;
+        // (Once the cap is reached no call is in flight any more, and an empty week is rightly stored as skipped.)
+        if (round <= 3 && mid) expect(mid.mode).not.toBe("skipped");
+        outcomes.push(await slow);
+      }
+      const paid = state.generate.mock.calls.length;
+      expect(paid).toBe(3);
+      const [row] = await sql`select model_calls, regenerations from coach_summary where user_id = ${ada.id}`;
+      expect(row.model_calls).toBe(3);
+      expect(row.regenerations).toBe(2);
+      expect(await rateCount(ada)).toBe(3);
+      expect(outcomes.filter((o) => o === "err:refresh_cap")).toHaveLength(5);
+    }, 30_000);
+
+    it("a call whose row changed under it is still counted, up to the cap", async () => {
+      await habitWith(ada, "Read", ["2026-11-02"]);
+      const fakeData = JSON.stringify({ headline: "h", summary: "s", wins: [], focus: [], nextStep: "n" });
+      const fakeStats = JSON.stringify({ week: W45, daysElapsed: 3, isCurrent: true, totals: { habits: 0, habitsOnGoal: 0, doneCheckIns: 0, completionPct: 0 }, habits: [] });
+      state.generate.mockImplementation(async (req: never) => {
+        // Something else rewrites the row while the call is in flight (the old "skipped" race).
+        await sql`insert into coach_summary (user_id, iso_week, data, stats, mode, input_hash, model_calls) values (${ada.id}, ${W45}, ${fakeData}::jsonb, ${fakeStats}::jsonb, 'skipped', ${"b".repeat(64)}, 2) on conflict (user_id, iso_week) do update set input_hash = ${"b".repeat(64)}, model_calls = 2, regenerations = 1`;
+        return actualGenerate(req);
+      });
+      const r = await post(ada);
+      expect(r.cached).toBe(true);
+      const [row] = await sql`select model_calls, regenerations, mode from coach_summary where user_id = ${ada.id}`;
+      expect(row.model_calls).toBe(3);
+      expect(row.regenerations).toBe(2);
+      expect(row.mode).toBe("skipped");
+      // Counting stops at the cap.
+      await sql`update coach_summary set model_calls = 3, regenerations = 2`;
+      state.generate.mockImplementation(actualGenerate);
+      await expect(post(ada)).rejects.toMatchObject({ reason: "refresh_cap" });
+    });
+
+    it("if storing the answer fails, the claim is deleted and both caps are refunded", async () => {
+      await habitWith(ada, "Read", ["2026-11-02"]);
+      state.generate.mockImplementation(async (req: never) => {
+        await sql`alter table coach_summary add constraint coach_tmp_fail check (false) not valid`;
+        return actualGenerate(req);
+      });
+      try {
+        await expect(post(ada)).rejects.toMatchObject({ status: 500 });
+      } finally {
+        await sql`alter table coach_summary drop constraint if exists coach_tmp_fail`;
+      }
+      expect(Number((await sql`select count(*) n from coach_claim`)[0].n)).toBe(0);
+      expect(await rateCount(ada)).toBe(0);
+      expect(await dailyCoach()).toBe(0);
+    });
+
     it("a call that outlives its claim does not overwrite the answer that took over", async () => {
       const h = await habitWith(ada, "Read", ["2026-11-02"]);
       // A second module instance, so the in-process dedupe doesn't hand the inner request this very run.
@@ -444,8 +514,9 @@ describe.skipIf(!url)("weekly coach (Postgres)", () => {
       const slow = await post(ada);
       expect(state.generate).toHaveBeenCalledTimes(2);
       expect(slow.cached).toBe(true); // its own answer was dropped; the stored one is returned
+      // Its answer was dropped but paid for: the week counts both calls.
       const [row] = await sql`select model_calls from coach_summary where user_id = ${ada.id}`;
-      expect(row.model_calls).toBe(1);
+      expect(row.model_calls).toBe(2);
       expect(h.id).toBeDefined();
     });
   });
