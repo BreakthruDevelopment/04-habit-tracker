@@ -224,7 +224,7 @@ else
 fi
 
 if [ "$PUSH_ON" = "true" ]; then
-  sub=$(node -e 'const c=require("node:crypto");const e=c.createECDH("prime256v1");e.generateKeys();process.stdout.write(JSON.stringify({endpoint:"https://fcm.googleapis.com/fcm/send/smoke-"+Date.now(),keys:{p256dh:e.getPublicKey().toString("base64url"),auth:c.randomBytes(16).toString("base64url")}}))')
+  sub=$(node -e 'const c=require("node:crypto");const e=c.createECDH("prime256v1");e.generateKeys();process.stdout.write(JSON.stringify({endpoint:"https://fcm.googleapis.com/fcm/send/smoke-"+Date.now(),expirationTime:null,keys:{p256dh:e.getPublicKey().toString("base64url"),auth:c.randomBytes(16).toString("base64url")}}))')
   req "$JAR_A" POST /api/push/subscriptions "$(echo "$sub" | jq -c '.endpoint="https://evil.example/x"')"; expect 400 "subscribe with a non-push host"
   code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -X POST -H 'content-type: application/json' -H 'origin: https://evil.example' -d "$sub" "$BASE_URL/api/push/subscriptions")
   [ "$code" = "403" ] || fail "cross-origin subscribe should be 403, got $code"

@@ -449,6 +449,14 @@ describe.skipIf(!url)("web push (Postgres)", () => {
         await expect(push.subscribe(ada, { endpoint: `${FCM}k`, keys })).rejects.toMatchObject({ name: "ZodError" });
       }
       await expect(push.subscribe(ada, { ...body(), extra: 1 })).rejects.toMatchObject({ name: "ZodError" });
+      await expect(push.subscribe(ada, { ...body(), expirationTime: "soon" })).rejects.toMatchObject({ name: "ZodError" });
+    });
+
+    it("accepts what browsers send: PushSubscription.toJSON() includes expirationTime", async () => {
+      await push.subscribe(ada, { ...body(`${FCM}exp-null`), expirationTime: null });
+      await push.subscribe(ada, { ...body("https://web.push.apple.com/QGexp"), expirationTime: null });
+      await push.subscribe(ada, { ...body(`${FCM}exp-num`), expirationTime: 1794200000000 });
+      expect(await push.listDevices(ada)).toHaveLength(3);
     });
 
     it("moves an endpoint to the user who signs in last, when they present the same keys", async () => {

@@ -61,6 +61,8 @@ function b64Bytes(bytes: number, chars: number) {
 export const subscribeSchema = z
   .object({
     endpoint: z.string().max(1024).refine(isAllowedPushEndpoint, "Unsupported push service"),
+    // PushSubscription.toJSON() always includes expirationTime (null in Chrome, Firefox and Safari). Accepted and ignored.
+    expirationTime: z.number().nonnegative().nullable().optional(),
     keys: z
       .object({
         // An uncompressed P-256 point: 65 bytes starting with 0x04.
