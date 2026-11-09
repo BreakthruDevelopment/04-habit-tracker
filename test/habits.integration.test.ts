@@ -487,6 +487,20 @@ describe.skipIf(!url)("habits (Postgres)", () => {
       expect(mid).toMatchObject({ week: "2026-W45", daysElapsed: 3 });
     });
 
+    it("reports each day's stored done flag, which a later target change doesn't rewrite", async () => {
+      await reset();
+      await setZone(ada, "UTC");
+      const h = await habitIn(ada, { name: "Read", kind: "numeric", unit: "pages", dailyTarget: "20", weeklyGoal: 2 });
+      await sql`insert into check_in (habit_id, owner_id, local_date, value, done) values (${h.id}, ${ada.id}, '2026-11-03', 25, true)`;
+      const fresh = await habits.getHabit(ada, h.id);
+      await habits.updateHabit(ada, h.id, { updatedAt: fresh.updatedAt.toISOString(), dailyTarget: "30" });
+      const s = await progress.weekSummary(ada, "2026-W45", at("2026-11-08T12:00:00Z"));
+      const r = s.habits[0];
+      expect(r.done).toEqual([false, true, false, false, false, false, false]);
+      expect(r.doneDays).toBe(1);
+      expect(r).not.toHaveProperty("doneFlags");
+    });
+
     it("answers GET /api/progress/week?week=2026-W53 with its Monday and Sunday, and its prev/next round-trip", async () => {
       await reset();
       await setZone(ada, "UTC");

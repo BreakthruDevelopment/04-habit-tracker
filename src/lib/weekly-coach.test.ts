@@ -26,7 +26,7 @@ describe("buildCoachInput", () => {
       totals: { habits: 25, habitsOnGoal: 0, doneCheckIns: 0, completionPct: 0 },
       habits: Array.from({ length: 25 }, (_, i) => ({
         habitId: `id-${i}`, name: `<b>H ${i}</b>`, kind: "check" as const, unit: null, dailyTarget: null, weeklyGoal: 3, doneDays: 0,
-        total: "0", values: Array(7).fill(null), goalMet: false, lastWeekDoneDays: 0,
+        total: "0", values: Array(7).fill(null), done: Array(7).fill(false), goalMet: false, lastWeekDoneDays: 0,
       })),
     };
     const input = buildCoachInput(summary, {});
