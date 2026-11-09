@@ -1,19 +1,40 @@
 import type { Metadata } from "next";
-import { PageIntro, Panel } from "@/components/ui";
+import { FreeTierBanner } from "@/components/habits/free-tier-banner";
+import { TodayList, type TodayItem } from "@/components/habits/today-list";
+import { DemoBadge, PageIntro } from "@/components/ui";
 import { requireUserOrRedirect } from "@/lib/auth/session";
+import { isDemoEmail } from "@/lib/demo-identity";
+import { fullDay } from "@/lib/format";
+import { today } from "@/lib/progress";
 
 export const metadata: Metadata = { title: "Today" };
 export const dynamic = "force-dynamic";
 
-/** Placeholder so sign-in has somewhere to land. The real Today page is built in issue 8. */
 export default async function TodayPage() {
   const user = await requireUserOrRedirect();
+  const view = await today(user);
+  const items: TodayItem[] = view.habits.map((h) => ({
+    id: h.id,
+    name: h.name,
+    kind: h.kind,
+    unit: h.unit,
+    dailyTarget: h.dailyTarget,
+    weeklyGoal: h.weeklyGoal,
+    value: h.value,
+    done: h.done,
+    streak: h.streak,
+    week: { dots: h.week.dots, doneDays: h.week.doneDays },
+  }));
   return (
     <>
-      <PageIntro section="Today" title={`Hello, ${user.name}`} description="Your habits will appear here." />
-      <Panel title="Coming soon">
-        <p className="text-muted">The habit list and check-ins arrive in the next releases.</p>
-      </Panel>
+      <PageIntro
+        section="Today"
+        title={fullDay(view.date)}
+        description={`Hello, ${user.name}. Check off what you've done; changes save as you tap.`}
+        actions={isDemoEmail(user.email) ? <DemoBadge /> : undefined}
+      />
+      <FreeTierBanner />
+      <TodayList date={view.date} initial={items} />
     </>
   );
 }

@@ -1,31 +1,41 @@
 import Link from "next/link";
-import { DemoBadge, PageIntro, Panel, StatusBadge, buttonPrimary, buttonSecondary } from "@/components/ui";
+import { FreeTierBanner } from "@/components/habits/free-tier-banner";
+import { PageIntro, Panel, buttonPrimary, buttonSecondary } from "@/components/ui";
+import { getCurrentUser } from "@/lib/auth/session";
 
 const features = [
-  { title: "Sign-in with roles", body: "Email and password out of the box, OIDC providers by config, admin and user roles enforced on the server." },
-  { title: "Postgres", body: "Typed schema and migrations with Drizzle. Every query checks who is asking." },
-  { title: "AI feature", body: "One gateway for every model call: input limits, validated JSON output, and a demo fallback." },
-  { title: "Any cloud", body: "One container image, deployed to AWS, Azure, Google Cloud or Oracle Cloud with Terraform." },
+  { title: "Two-tap check-ins", body: "Tick a yes/no habit or step a number up and down. It saves as you tap, and rolls back if something goes wrong." },
+  { title: "Streaks and week dots", body: "See this week's progress at a glance, with day streaks for daily habits and week streaks for the rest." },
+  { title: "30-day heatmap", body: "One grid for all your habits and one for each habit, so patterns show up without a chart." },
+  { title: "Reminders on your phone", body: "Add the app to your home screen and get a push when something is still open. No native app needed." },
 ];
 
-export default function Home() {
+export default async function Home() {
+  const user = await getCurrentUser();
   return (
     <>
       <PageIntro
-        section="Template"
-        title="A production-shaped starting point."
-        description="Each app in the portfolio starts from this template and replaces the example items with its own domain and AI feature."
+        section="Habit and Goal Tracker"
+        title="Small habits, checked off daily."
+        description="Define a few habits, check them off in two taps, and watch streaks and a 30-day heatmap build up."
         actions={
-          <>
-            <Link href="/sign-in" className={buttonPrimary}>
-              Get started
+          user ? (
+            <Link href="/today" className={buttonPrimary}>
+              Open Today
             </Link>
-            <Link href="/api/health" className={buttonSecondary}>
-              Health check
-            </Link>
-          </>
+          ) : (
+            <>
+              <Link href="/sign-in" className={buttonPrimary}>
+                Sign in or create an account
+              </Link>
+              <Link href="/api/health" className={buttonSecondary}>
+                Health check
+              </Link>
+            </>
+          )
         }
       />
+      <FreeTierBanner />
       <div className="grid gap-x-4 sm:grid-cols-2">
         {features.map((f) => (
           <Panel key={f.title} title={f.title}>
@@ -33,17 +43,6 @@ export default function Home() {
           </Panel>
         ))}
       </div>
-      <Panel title="Status labels" action={<DemoBadge />}>
-        <p className="mb-3 text-muted">
-          The shared badges used across the portfolio. Not started is neutral, never an error.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          <StatusBadge status="live" />
-          <StatusBadge status="building" />
-          <StatusBadge status="blocked" />
-          <StatusBadge status="not-started" />
-        </div>
-      </Panel>
     </>
   );
 }
