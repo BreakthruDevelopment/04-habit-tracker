@@ -1,0 +1,2 @@
+# One line: the deployed https URL that live-smoke.yml tests when a claude/live-smoke* branch is pushed.
+https://app4.breakthruventures.ai
