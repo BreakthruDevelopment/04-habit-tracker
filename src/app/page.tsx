@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { FreeTierBanner } from "@/components/habits/free-tier-banner";
-import { PageIntro, Panel, buttonPrimary, buttonSecondary } from "@/components/ui";
+import { PageIntro, Panel, buttonPrimary } from "@/components/ui";
 import { getCurrentUser } from "@/lib/auth/session";
 
 const features = [
@@ -24,14 +24,9 @@ export default async function Home() {
               Open Today
             </Link>
           ) : (
-            <>
-              <Link href="/sign-in" className={buttonPrimary}>
-                Sign in or create an account
-              </Link>
-              <Link href="/api/health" className={buttonSecondary}>
-                Health check
-              </Link>
-            </>
+            <Link href="/sign-in" className={buttonPrimary}>
+              Sign in or create an account
+            </Link>
           )
         }
       />

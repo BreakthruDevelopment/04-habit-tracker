@@ -46,7 +46,7 @@ export async function sendJson(
     const data = res.status === 204 ? null : await res.json().catch(() => null);
     return { ok: true, status: res.status, data };
   } catch (err) {
-    const aborted = err instanceof DOMException && err.name === "AbortError";
+    const aborted = err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError");
     return {
       ok: false,
       status: aborted ? -1 : 0,

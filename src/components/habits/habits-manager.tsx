@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { type Column, DataList, Panel, buttonDanger, buttonSecondary } from "@/components/ui";
 import { sendJson } from "@/lib/client-api";
 import { HabitForm, type HabitFormValues } from "./habit-form";
@@ -19,7 +19,11 @@ function describe(h: ManagedHabit): string {
 
 export function HabitsManager({ active, archived }: { active: ManagedHabit[]; archived: ManagedHabit[] }) {
   const router = useRouter();
-  const [busy, setBusy] = useState(false);
+  const [working, setBusy] = useState(false);
+  const [isPending, startTransition] = useTransition();
+  // A request, or the refresh that follows it, counts as busy.
+  const busy = working || isPending;
+  const refresh = () => startTransition(() => router.refresh());
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
@@ -33,10 +37,12 @@ export function HabitsManager({ active, archived }: { active: ManagedHabit[]; ar
     setBusy(false);
     if (!res.ok) {
       setError(res.message);
+      // A stale token (409) means the list is out of date: show the latest.
+      if (res.status === 409) refresh();
       return false;
     }
     setNotice(label);
-    router.refresh();
+    refresh();
     return true;
   }
 
@@ -152,18 +158,18 @@ export function HabitsManager({ active, archived }: { active: ManagedHabit[]; ar
             onCancel={() => setEditing(null)}
             onReload={() => {
               setNotice("Reloaded the latest version of this habit.");
-              router.refresh();
+              refresh();
             }}
             onDone={(message) => {
               setEditing(null);
               setNotice(message);
-              router.refresh();
+              refresh();
             }}
           />
         </Panel>
       ) : (
         <Panel title="Add a habit">
-          <HabitForm onDone={(message) => { setNotice(message); router.refresh(); }} />
+          <HabitForm onDone={(message) => { setNotice(message); refresh(); }} />
         </Panel>
       )}
 

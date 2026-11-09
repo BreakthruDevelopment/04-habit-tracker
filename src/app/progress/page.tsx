@@ -7,7 +7,7 @@ import { type Column, DataList, DemoBadge, PageIntro, Panel, StatGrid, StatTile,
 import { requireUserOrRedirect } from "@/lib/auth/session";
 import { isDemoEmail } from "@/lib/demo-identity";
 import { BadRequestError } from "@/lib/errors";
-import { cents, shortDay, weekdayName } from "@/lib/format";
+import { shortDay, weekdayName } from "@/lib/format";
 import { listHabits } from "@/lib/habits";
 import { type WeekHabit, type WeekSummary, heatmap, streaks, weekSummary } from "@/lib/progress";
 import { addDays, parseIsoWeek } from "@/lib/time";
@@ -61,6 +61,13 @@ function WeekToggle({ summary }: { summary: WeekSummary }) {
   );
 }
 
+/** In the current week a goal that can still be met is "Not yet", not "Behind". Today still counts if it's open. */
+function reachable(h: WeekHabit, s: WeekSummary): boolean {
+  if (!s.isCurrent) return false;
+  const todayOpen = h.done[s.daysElapsed - 1] ? 0 : 1;
+  return h.doneDays + (7 - s.daysElapsed) + todayOpen >= h.weeklyGoal;
+}
+
 function dotsFor(h: WeekHabit, s: WeekSummary): Dot[] {
   return h.values.map((v, i) => {
     const date = addDays(s.monday, i);
@@ -69,7 +76,7 @@ function dotsFor(h: WeekHabit, s: WeekSummary): Dot[] {
         ? i >= s.daysElapsed
           ? "future"
           : "none"
-        : h.kind === "check" || (h.dailyTarget !== null && cents(v) >= cents(h.dailyTarget))
+        : h.done[i]
           ? "done"
           : "partial";
     return { key: date, label: weekdayName(date), state };
@@ -145,7 +152,13 @@ export default async function ProgressPage({ searchParams }: { searchParams: Pro
       cell: (h) => (
         <span className="inline-flex items-center gap-2">
           {h.doneDays} of {h.weeklyGoal}
-          {h.goalMet ? <StatusBadge status="passed" label="On goal" /> : <StatusBadge status="not-started" label="Behind" />}
+          {h.goalMet ? (
+            <StatusBadge status="passed" label="On goal" />
+          ) : reachable(h, summary) ? (
+            <StatusBadge status="not-started" label="Not yet" />
+          ) : (
+            <StatusBadge status="building" label="Behind" />
+          )}
         </span>
       ),
     },
@@ -169,7 +182,7 @@ export default async function ProgressPage({ searchParams }: { searchParams: Pro
         <StatTile value={`${totals.habitsOnGoal} of ${totals.habits}`} label="Habits on goal" tone={totals.habits > 0 && totals.habitsOnGoal === totals.habits ? "live" : "default"} />
         <StatTile
           value={best ? best.s.current : "–"}
-          label={best ? `${best.s.mode === "week" ? "Week" : "Day"} streak, ${names.get(best.id) ?? "best habit"}` : "No streak yet"}
+          label={best ? `Best current streak: ${names.get(best.id) ?? "a habit"}, ${best.s.mode === "week" ? "weeks" : "days"}` : "No streak yet"}
           tone={best ? "live" : "default"}
         />
         <StatTile value={totals.doneCheckIns} label="Check-ins done" />
@@ -180,7 +193,7 @@ export default async function ProgressPage({ searchParams }: { searchParams: Pro
           <Heatmap
             days={map.days}
             label="All habits, last 30 days"
-            legend="Darker means more of your habits were done that day."
+            legend="Darker means more of your habits were done that day. The ringed cell is today."
             describe={(d) => `${shortDay(d.date)}: ${d.done} of ${d.total}`}
           />
         </Panel>

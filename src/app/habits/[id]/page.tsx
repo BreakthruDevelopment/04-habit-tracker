@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { FreeTierBanner } from "@/components/habits/free-tier-banner";
 import { Heatmap } from "@/components/habits/heatmap";
 import { RecentDays, type RecentDay } from "@/components/habits/recent-days";
 import { type Column, DataList, DemoBadge, PageIntro, Panel, StatGrid, StatTile, StatusBadge, buttonSecondary } from "@/components/ui";
@@ -77,7 +76,6 @@ export default async function HabitDetailPage({ params }: { params: Promise<{ id
           </>
         }
       />
-      <FreeTierBanner />
 
       <StatGrid>
         <StatTile value={streak.current} label={`Current ${unit} streak`} tone={streak.current > 0 ? "live" : "default"} />
@@ -92,10 +90,11 @@ export default async function HabitDetailPage({ params }: { params: Promise<{ id
             <Heatmap
               days={map.days}
               label={`${habit.name}, last 30 days`}
-              legend="Darker means closer to the daily target."
+              legend={habit.kind === "numeric" ? "Darker means closer to the daily target." : "A filled cell means you checked in that day."}
+              scale={habit.kind === "numeric" ? "intensity" : "binary"}
               describe={(d) =>
                 habit.kind === "numeric"
-                  ? `${shortDay(d.date)}: ${d.value ?? "0"} of ${target} ${habit.unit}`
+                  ? `${shortDay(d.date)}: ${d.value ?? "0"} of ${target} ${habit.unit}${d.done ? ", done" : ""}`
                   : `${shortDay(d.date)}: ${d.done ? "done" : "not done"}`
               }
             />

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { Panel, buttonPrimary } from "@/components/ui";
 import { plural, weekdayName } from "@/lib/format";
@@ -59,6 +60,7 @@ function fromApi(body: { habits?: Record<string, unknown>[] }): TodayItem[] | nu
 }
 
 export function TodayList({ date, initial }: { date: string; initial: TodayItem[] }) {
+  const router = useRouter();
   const [habits, setHabits] = useState(initial);
   const busy = useRef(0);
   const epoch = useRef(0);
@@ -79,7 +81,13 @@ export function TodayList({ date, initial }: { date: string; initial: TodayItem[
     try {
       const res = await fetch("/api/today", { cache: "no-store" });
       if (!res.ok) return;
-      const next = fromApi(await res.json());
+      const body = await res.json();
+      // The day rolled over (or the zone changed) since this page loaded: reload the server-rendered page.
+      if (body.date !== date) {
+        router.refresh();
+        return;
+      }
+      const next = fromApi(body);
       if (next && mine === epoch.current && busy.current === 0) setHabits(next);
     } catch {
       // The optimistic numbers are already right; streaks catch up on the next load.
@@ -121,7 +129,7 @@ export function TodayList({ date, initial }: { date: string; initial: TodayItem[
             <div className="min-w-0 space-y-3">
               <div className="space-y-1">
                 <h3 className="break-words font-semibold">
-                  <Link href={`/habits/${h.id}`} className="inline-flex min-h-11 items-center text-foreground hover:text-accent hover:underline">
+                  <Link href={`/habits/${h.id}`} className="inline-flex min-h-11 min-w-11 items-center text-foreground hover:text-accent hover:underline">
                     {h.name}
                   </Link>
                 </h3>

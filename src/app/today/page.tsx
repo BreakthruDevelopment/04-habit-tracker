@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { FreeTierBanner } from "@/components/habits/free-tier-banner";
 import { TodayList, type TodayItem } from "@/components/habits/today-list";
 import { DemoBadge, PageIntro } from "@/components/ui";
 import { requireUserOrRedirect } from "@/lib/auth/session";
@@ -33,7 +32,6 @@ export default async function TodayPage() {
         description={`Hello, ${user.name}. Check off what you've done; changes save as you tap.`}
         actions={isDemoEmail(user.email) ? <DemoBadge /> : undefined}
       />
-      <FreeTierBanner />
       <TodayList date={view.date} initial={items} />
     </>
   );

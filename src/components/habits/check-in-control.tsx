@@ -57,8 +57,8 @@ export function CheckInControl({
     );
     const res =
       nextValue === null
-        ? await sendJson("DELETE", url)
-        : await sendJson("PUT", url, habit.kind === "check" ? {} : { value: nextValue });
+        ? await sendJson("DELETE", url, undefined, AbortSignal.timeout(15000))
+        : await sendJson("PUT", url, habit.kind === "check" ? {} : { value: nextValue }, AbortSignal.timeout(15000));
     setPending(false);
     onBusy?.(false);
     if (!res.ok) {
@@ -94,7 +94,7 @@ export function CheckInControl({
           }
         >
           <span aria-hidden>{state.done ? "✓" : "○"}</span>
-          {state.done ? "Done" : "Mark done"}
+          Done
           <span className="sr-only"> for {habit.name}</span>
         </button>
         {errorNote}

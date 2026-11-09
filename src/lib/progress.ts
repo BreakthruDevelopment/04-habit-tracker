@@ -167,6 +167,8 @@ export type WeekHabit = {
   total: string;
   /** Seven entries, Monday to Sunday: the value saved that day, or null. */
   values: (string | null)[];
+  /** Seven entries, Monday to Sunday: the `done` flag stored with that day's check-in (fixed when it was written). */
+  done: boolean[];
   goalMet: boolean;
   lastWeekDoneDays: number;
 };
@@ -199,7 +201,8 @@ export function weekQuery(userId: string, timeZone: string, monday: string, sund
       (count(c.local_date) filter (where c.done and ${inWeek}))::int as "doneDays",
       coalesce(sum(c.value) filter (where ${inWeek}), 0)::text as total,
       (count(c.local_date) filter (where c.done and ${inPrev}))::int as "lastWeekDoneDays",
-      coalesce(jsonb_object_agg(c.local_date::text, c.value::text) filter (where ${inWeek}), '{}'::jsonb) as "values"
+      coalesce(jsonb_object_agg(c.local_date::text, c.value::text) filter (where ${inWeek}), '{}'::jsonb) as "values",
+      coalesce(jsonb_object_agg(c.local_date::text, c.done) filter (where ${inWeek}), '{}'::jsonb) as "doneFlags"
     from habit h
     left join check_in c on c.habit_id = h.id and c.owner_id = h.owner_id
       and c.owner_id = ${userId} and c.local_date between ${prevMonday}::date and ${sunday}::date
@@ -211,7 +214,7 @@ export function weekQuery(userId: string, timeZone: string, monday: string, sund
   `;
 }
 
-type WeekRow = Omit<WeekHabit, "values" | "goalMet"> & { values: Record<string, string> };
+type WeekRow = Omit<WeekHabit, "values" | "done" | "goalMet"> & { values: Record<string, string>; doneFlags: Record<string, boolean> };
 
 /**
  * One ISO week (`YYYY-Www`, ISO week-year) for the actor's habits. The label must be a real week, no later than
@@ -228,7 +231,7 @@ export async function weekSummary(actor: Actor, weekLabel?: string | null, now: 
   }
   const sunday = addDays(monday, 6);
   const rows = (await db().execute(weekQuery(actor.id, timeZone, monday, sunday))) as unknown as WeekRow[];
-  const habits = rows.map((r): WeekHabit => ({
+  const habits = rows.map(({ doneFlags, ...r }): WeekHabit => ({
     ...r,
     dailyTarget: r.dailyTarget === null ? null : trimNumeric(r.dailyTarget),
     total: trimNumeric(r.total),
@@ -236,6 +239,7 @@ export async function weekSummary(actor: Actor, weekLabel?: string | null, now: 
       const v = r.values[addDays(monday, i)];
       return v === undefined ? null : trimNumeric(v);
     }),
+    done: Array.from({ length: 7 }, (_, i) => doneFlags[addDays(monday, i)] === true),
     goalMet: r.doneDays >= r.weeklyGoal,
   }));
   const goalSum = habits.reduce((n, h) => n + h.weeklyGoal, 0);
