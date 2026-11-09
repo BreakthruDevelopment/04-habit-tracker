@@ -46,6 +46,12 @@ function liveProvider(): AiProvider | null {
   return null;
 }
 
+/** "provider:model" of the live provider, or "demo": what a cached answer should be keyed on. */
+export function configuredModel(): string {
+  const p = liveProvider();
+  return p ? `${p.name}:${p.model}` : "demo";
+}
+
 /** Models sometimes wrap JSON in code fences despite instructions. */
 export function extractJson(text: string): unknown {
   const trimmed = text.trim();
