@@ -1,0 +1,53 @@
+name: Live smoke test
+
+# Runs scripts/smoke.sh against the deployed app: sign-ups, habits and check-ins, ownership and
+# conflict rules, progress, web push subscriptions, the weekly coach (live or demo) and cleanup. Two ways to point it at a URL:
+#   - Actions tab > Run workflow, and type the base URL; or
+#   - push a claude/live-smoke* branch that has the URL in .github/live-smoke-url (one line).
+# .github/live-smoke-url holds the current current URL; change it when the app moves to its app4 domain.
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Site to test (the app's own public URL, https)
+        required: false
+        default: ""
+  push:
+    branches: ["claude/live-smoke*"]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Pick the URL to test
+        id: url
+        env:
+          INPUT_URL: ${{ inputs.base_url }}
+        run: |
+          url="$(printf '%s' "${INPUT_URL:-}" | tr -d '[:space:]')"
+          if [ -z "$url" ] && [ -f .github/live-smoke-url ]; then
+            url="$(grep -v '^[[:space:]]*#' .github/live-smoke-url | head -n1 | tr -d '[:space:]')"
+          fi
+          if [ -z "$url" ]; then
+            echo "::error::No URL. Pass base_url, or put the deployed URL in .github/live-smoke-url."
+            exit 1
+          fi
+          if ! [[ "$url" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]]; then
+            echo "::error::The live URL must look like https://host[:port]"
+            exit 1
+          fi
+          echo "url=${url%/}" >> "$GITHUB_OUTPUT"
+          echo "Testing ${url%/}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke test the live site
+        env:
+          BASE_URL: ${{ steps.url.outputs.url }}
+          # The live app has VAPID keys, so push must be configured, not skipped.
+          REQUIRE_PUSH: "1"
+        run: bash scripts/smoke.sh
