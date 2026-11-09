@@ -113,6 +113,7 @@ export async function disablePush(): Promise<void> {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ endpoint: sub.endpoint }),
       keepalive: true,
+      signal: AbortSignal.timeout(3000), // sign-out must never hang on this
     });
   } catch {
     // Offline: the server prunes dead subscriptions on its own.

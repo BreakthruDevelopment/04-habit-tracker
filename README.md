@@ -135,3 +135,10 @@ HNSW limit). Limits: 32 texts per call, 8,000 characters each, 64,000 in total (
   `demo: true` and the demo model name so vector spaces are never mixed.
 - `AI_TIMEOUT_MS` (default 20000, max 22000) bounds every provider call, `generate()` and `embed()` alike.
 - Logs carry task, provider, model, count and latency, never the text.
+
+## Reminders (web push)
+
+The app makes its own VAPID key pair on first start and stores it in the `app_settings` table; reminders are
+scheduled in process (`REMINDER_SCHEDULER=off` disables that). **To rotate the keys, delete the `app_settings` row and
+restart every instance**: each process caches the pair in memory, and everyone has to turn reminders on again afterwards
+(subscriptions made under the old key are pruned).

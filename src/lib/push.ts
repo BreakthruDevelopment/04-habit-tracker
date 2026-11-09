@@ -21,7 +21,7 @@ import { env } from "@/lib/env";
 import { BadRequestError, HttpError, NotFoundError } from "@/lib/errors";
 import { log } from "@/lib/log";
 import { ownedBy } from "@/lib/owned";
-import { advisoryLock, consumeRate, releaseRate, reserveDaily } from "@/lib/usage";
+import { advisoryLock, consumeRate, dailyCount, releaseRate, reserveDaily } from "@/lib/usage";
 import { type VapidKeys, getVapidKeys } from "@/lib/vapid";
 
 const { pushSubscription } = schema;
@@ -42,6 +42,8 @@ export function isAllowedPushEndpoint(endpoint: string): boolean {
   } catch {
     return false;
   }
+  // Only the canonical form is stored, so the allow-list check and what we later POST to are the same string.
+  if (url.href !== endpoint) return false;
   if (url.protocol !== "https:" || url.username || url.password) return false;
   if (url.port !== "" && url.port !== "443") return false;
   const host = url.hostname;
@@ -172,9 +174,14 @@ export async function subscribe(actor: Actor, input: unknown, userAgent?: string
           createdAt: sql`now()`,
           failureCount: 0,
           lastStatus: null,
+          lastSuccessAt: null,
         },
+        // An endpoint is a capability held by one browser. Another account may take it over only by presenting the same
+        // keys (which only that browser has); otherwise the row stays with its owner and nothing is returned.
+        setWhere: sql`${pushSubscription.userId} = ${actor.id} or (${pushSubscription.auth} = excluded.auth and ${pushSubscription.p256dh} = excluded.p256dh)`,
       })
       .returning();
+    if (!row) throw new HttpError(409, "This device is set up for another account.");
     const mine = await tx.select({ id: pushSubscription.id }).from(pushSubscription).where(ownedBy(pushSubscription, actor)).orderBy(asc(pushSubscription.createdAt), asc(pushSubscription.id));
     const extra = mine.length - MAX_PUSH_DEVICES;
     if (extra > 0) {
@@ -203,8 +210,26 @@ export type PushPayload = { title: string; body: string; url: string; tag: strin
 export type SendResult = { sent: number; removed: number; failed: number };
 
 /** State shared by the sends of one run: hosts that answered 429, and whether the daily cap was reached. */
-export type SendContext = { blockedHosts: Set<string>; capped: boolean };
-export const newSendContext = (): SendContext => ({ blockedHosts: new Set(), capped: false });
+export type SendContext = { blockedHosts: Set<string>; capped: boolean; /** epoch ms after which nothing new is started */ deadline?: number };
+export const newSendContext = (deadline?: number): SendContext => ({ blockedHosts: new Set(), capped: false, deadline });
+
+/** One process-wide limit on sends in flight, however many users and devices are being served at once. */
+function createGate(limit: number) {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (active >= limit) await new Promise<void>((resolve) => waiting.push(resolve));
+    else active++;
+    try {
+      return await fn();
+    } finally {
+      const next = waiting.shift();
+      if (next) next(); // hand the slot over
+      else active--;
+    }
+  };
+}
+const sendGate = createGate(PUSH_SEND_CONCURRENCY);
 
 type Sub = typeof pushSubscription.$inferSelect;
 
@@ -230,7 +255,7 @@ async function sendOne(sub: Sub, body: string, keys: VapidKeys, topic: string | 
     return "removed";
   }
   const host = new URL(sub.endpoint).hostname;
-  if (ctx.blockedHosts.has(host) || ctx.capped) return "skipped";
+  if (ctx.blockedHosts.has(host) || ctx.capped || (ctx.deadline !== undefined && Date.now() > ctx.deadline)) return "skipped";
   if (!(await reserveDaily(database, "push", env().PUSH_DAILY_CAP))) {
     ctx.capped = true;
     log.warn("push.daily_cap_reached");
@@ -296,7 +321,7 @@ export async function sendToUser(
     .select()
     .from(pushSubscription)
     .where(and(eq(pushSubscription.userId, userId), eq(pushSubscription.vapidKeyId, keys.keyId)));
-  const results = await mapLimit(subs, PUSH_SEND_CONCURRENCY, (s) => sendOne(s, body, keys, opts.topic, ctx, now));
+  const results = await Promise.all(subs.map((s) => sendGate(() => sendOne(s, body, keys, opts.topic, ctx, now))));
   const count = (k: string) => results.filter((r) => r === k).length;
   return { sent: count("sent"), removed: count("removed"), failed: count("failed") };
 }
@@ -339,7 +364,10 @@ export type ReminderResult =
   | { considered: number; claimed: number; sent: number; removed: number; failed: number }
   | { skipped: "busy" | "unavailable" };
 
-type Eligible = { user_id: string; time_zone: string; local_date: string };
+/** No new user is claimed and no new send starts after this long into a run, so a stuck run can't hold its tick forever. */
+const RUN_DEADLINE_MS = 4 * 60_000;
+
+type Eligible = { user_id: string; time_zone: string; reminder_time: string; local_date: string };
 
 /**
  * Remind every user whose reminder time has come, once per local day, only when something is still open.
@@ -396,7 +424,7 @@ async function run(now: Date): Promise<ReminderResult> {
              ((z.local_date + 1)::timestamp at time zone z.time_zone) as day_end
       from z
     )
-    select user_id, time_zone, to_char(local_date, 'YYYY-MM-DD') as local_date
+    select user_id, time_zone, reminder_time::text as reminder_time, to_char(local_date, 'YYYY-MM-DD') as local_date
     from w
     where ${stamp} >= starts_at
       and ${stamp} < least(starts_at + make_interval(hours => ${REMINDER_WINDOW_HOURS}), day_end)
@@ -406,16 +434,23 @@ async function run(now: Date): Promise<ReminderResult> {
     limit ${REMINDER_MAX_USERS_PER_RUN}
   `);
 
-  const ctx = newSendContext();
+  const deadline = Date.now() + RUN_DEADLINE_MS;
+  const ctx = newSendContext(deadline);
   const totals = { considered: eligible.length, claimed: 0, sent: 0, removed: 0, failed: 0 };
 
   await mapLimit([...eligible], PUSH_SEND_CONCURRENCY, async (u) => {
-    if (ctx.capped) return;
+    // Don't claim (and so don't use up the day of) a user we can't send to: the daily cap is checked first.
+    if (ctx.capped || Date.now() > deadline) return;
+    if ((await dailyCount("push")) >= env().PUSH_DAILY_CAP) {
+      ctx.capped = true;
+      log.warn("push.daily_cap_reached");
+      return;
+    }
     // Claim first. The conditions repeat, and the zone and time must be unchanged since the read above.
     const claimed = await database.execute<{ user_id: string }>(sql`
       update user_settings
       set last_reminder_on = ${u.local_date}::date, last_reminder_at = ${stamp}
-      where user_id = ${u.user_id} and time_zone = ${u.time_zone} and reminder_time is not null
+      where user_id = ${u.user_id} and time_zone = ${u.time_zone} and reminder_time = ${u.reminder_time}::time
         and last_reminder_on is distinct from ${u.local_date}::date
         and (last_reminder_at is null or last_reminder_at < ${stamp} - ${gap})
       returning user_id

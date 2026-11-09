@@ -4,6 +4,7 @@
  * handling, the reminder run (once per local day, windows, DST, zone changes, caps) and VAPID key creation.
  */
 import { createECDH, randomBytes } from "node:crypto";
+import { sql as dsql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,9 +14,22 @@ const url = process.env.TEST_DATABASE_URL;
 const state = vi.hoisted(() => ({
   user: null as null | { id: string; role: "user" | "admin"; name: string; email: string },
   send: vi.fn(),
+  pairs: [] as { publicKey: string; privateKey: string }[],
 }));
 
-vi.mock("web-push", async (orig) => ({ ...(await orig<typeof import("web-push")>()), sendNotification: state.send }));
+vi.mock("web-push", async (orig) => {
+  const actual = await orig<typeof import("web-push")>();
+  return {
+    ...actual,
+    sendNotification: state.send,
+    // Remember every pair generated, so a test can check the private key never shows up anywhere.
+    generateVAPIDKeys: () => {
+      const pair = actual.generateVAPIDKeys();
+      state.pairs.push(pair);
+      return pair;
+    },
+  };
+});
 
 vi.mock("@/lib/auth/session", async () => {
   const { UnauthorizedError } = await import("@/lib/auth/rbac");
@@ -260,6 +274,21 @@ describe.skipIf(!url)("web push (Postgres)", () => {
       expect(sentTo()).toEqual([ok.endpoint]);
     });
 
+    it("doesn't claim a user whose reminder time changed between the read and the claim", async () => {
+      await reminded(ada, "America/Denver", "08:00");
+      const database = dbm.db();
+      const original = database.execute.bind(database);
+      let calls = 0;
+      vi.spyOn(database, "execute").mockImplementation((async (...args: Parameters<typeof original>) => {
+        const result = await original(...args);
+        if (++calls === 1) await sql`update user_settings set reminder_time = '20:00' where user_id = ${ada.id}`; // after the eligibility read
+        return result;
+      }) as never);
+      expect(await push.runReminders(utc("2026-11-08T15:10:00Z"))).toMatchObject({ considered: 1, claimed: 0, sent: 0 });
+      expect(state.send).not.toHaveBeenCalled();
+      expect(await claimOn(ada)).toBeNull();
+    });
+
     it("returns busy while another run holds the lock, and releases it afterwards", async () => {
       await reminded(ada, "America/Denver", "08:00");
       const other = postgres(url!, { max: 1, onnotice: () => {} });
@@ -352,8 +381,28 @@ describe.skipIf(!url)("web push (Postgres)", () => {
       expect(await usage.dailyCount("push")).toBe(2);
       // And a reminder run claims nobody once the cap is reached.
       await reminded(ben, "America/Denver", "08:00");
-      expect(await push.runReminders(utc("2026-11-08T15:10:00Z"))).toMatchObject({ sent: 0 });
+      expect(await push.runReminders(utc("2026-11-08T15:10:00Z"))).toMatchObject({ claimed: 0, sent: 0 });
       expect(state.send).toHaveBeenCalledTimes(2);
+      // A capped user isn't claimed, so they keep their reminder for when the cap allows it.
+      expect(await claimOn(ben)).toBeNull();
+    });
+
+    it("never has more than 10 sends in flight, across users", async () => {
+      const users = [ada, ben, cat, root, mk("dee"), mk("eve")];
+      for (const u of users.slice(4)) await sql`insert into "user" (id, name, email, role) values (${u.id}, ${u.name}, ${u.email}, 'user') on conflict do nothing`;
+      for (const u of users) for (let i = 0; i < 5; i++) await device(u);
+      let active = 0;
+      let peak = 0;
+      state.send.mockImplementation(async () => {
+        peak = Math.max(peak, ++active);
+        await new Promise((r) => setTimeout(r, 15));
+        active--;
+        return { statusCode: 201 };
+      });
+      const all = await Promise.all(users.map((u) => push.sendToUser(u.id, payload)));
+      expect(all.reduce((n, r) => n + r.sent, 0)).toBe(30);
+      expect(peak).toBeLessThanOrEqual(10);
+      expect(peak).toBeGreaterThan(1);
     });
 
     it("refuses to call an endpoint that isn't on the allow-list, even if one got into the table", async () => {
@@ -380,6 +429,9 @@ describe.skipIf(!url)("web push (Postgres)", () => {
         "https://push.services.mozilla.com/x",
         "https://notify.windows.com/x",
         "https://127.0.0.1/x",
+        "https://FCM.googleapis.com/fcm/send/x", // only the canonical form is stored
+        "https://fcm.googleapis.com", // no path: the canonical form has a slash
+        "https://fcm.googleapis.com/fcm/send/../x",
         "not a url",
       ];
       for (const endpoint of bad) {
@@ -399,13 +451,36 @@ describe.skipIf(!url)("web push (Postgres)", () => {
       await expect(push.subscribe(ada, { ...body(), extra: 1 })).rejects.toMatchObject({ name: "ZodError" });
     });
 
-    it("moves an endpoint to the user who signs in last", async () => {
-      const endpoint = `${FCM}shared`;
-      await push.subscribe(ada, body(endpoint));
-      await push.subscribe(ben, body(endpoint));
+    it("moves an endpoint to the user who signs in last, when they present the same keys", async () => {
+      const shared = body(`${FCM}shared`);
+      await push.subscribe(ada, shared);
+      await sql`update push_subscription set last_success_at = now(), failure_count = 3 where endpoint = ${shared.endpoint}`;
+      await push.subscribe(ben, shared);
       expect(await push.listDevices(ada)).toHaveLength(0);
       expect(await push.listDevices(ben)).toHaveLength(1);
-      expect(await sql`select 1 from push_subscription where endpoint = ${endpoint}`).toHaveLength(1);
+      expect(await sql`select 1 from push_subscription where endpoint = ${shared.endpoint}`).toHaveLength(1);
+      // The new owner starts clean: no inherited delivery history.
+      expect((await sql`select last_success_at, failure_count from push_subscription where endpoint = ${shared.endpoint}`)[0]).toEqual({ last_success_at: null, failure_count: 0 });
+    });
+
+    it("refuses to take an endpoint over without its keys: 409, and the owner keeps the row", async () => {
+      const mine = body(`${FCM}victim`);
+      await push.subscribe(ada, mine);
+      const [before] = await sql`select id, user_id, p256dh, auth from push_subscription where endpoint = ${mine.endpoint}`;
+      // Knowing only the endpoint (say, from a leaked URL) isn't enough, whatever keys are offered.
+      for (const keys of [webPushKeys(), { p256dh: mine.keys.p256dh, auth: webPushKeys().auth }, { p256dh: webPushKeys().p256dh, auth: mine.keys.auth }]) {
+        await expect(push.subscribe(ben, { endpoint: mine.endpoint, keys })).rejects.toMatchObject({ status: 409, message: "This device is set up for another account." });
+      }
+      await expect(push.subscribe(root, { endpoint: mine.endpoint, keys: webPushKeys() })).rejects.toMatchObject({ status: 409 });
+      const [after] = await sql`select id, user_id, p256dh, auth from push_subscription where endpoint = ${mine.endpoint}`;
+      expect(after).toEqual(before);
+      expect(await push.listDevices(ben)).toHaveLength(0);
+      // The refusal comes before the device cap and costs nothing: Ben's attempts rolled back with it.
+      expect((await sql`select count(*)::int n from rate_event where user_id = ${ben.id}`)[0].n).toBe(0);
+      // The owner can still replace their own keys (the browser rotated them).
+      const rotated = { endpoint: mine.endpoint, keys: webPushKeys() };
+      await push.subscribe(ada, rotated);
+      expect((await sql`select p256dh from push_subscription where endpoint = ${mine.endpoint}`)[0].p256dh).toBe(rotated.keys.p256dh);
     });
 
     it("keeps at most 5 devices, replacing the oldest", async () => {
@@ -534,6 +609,66 @@ describe.skipIf(!url)("web push (Postgres)", () => {
       expect(JSON.parse(seen[1]).push).toBe("on");
       for (const text of [...seen, ...lines]) expect(text).not.toContain(fresh.privateKey);
       expect(lines.join("\n")).toContain("vapid.pruned_subscriptions");
+    });
+
+    it("never logs the private key when creating it fails (subscribe, runReminders, vapidKeysOrNull, routes)", async () => {
+      const lines: string[] = [];
+      for (const m of ["log", "error", "warn"] as const) vi.spyOn(console, m).mockImplementation((l: unknown) => void lines.push(String(l)));
+      await sql`delete from push_subscription`;
+      await sql`delete from app_settings`;
+      await sql`create or replace function pu_boom() returns trigger language plpgsql as $$ begin raise exception 'boom'; end $$`;
+      await sql`create trigger pu_boom before insert on app_settings for each row execute function pu_boom()`;
+      const seen: string[] = [];
+      try {
+        state.pairs.length = 0;
+        const fresh = () => vapid.resetVapidCache();
+
+        fresh();
+        const err = await vapid.getVapidKeys().then(() => null, (e: Error) => e);
+        expect(err?.message).toBe("VAPID key load failed (P0001)");
+        seen.push(String(err?.stack));
+
+        fresh();
+        const failed = await push.subscribe(ada, { endpoint: `${FCM}x`, keys: webPushKeys() }).then(() => null, (e: Error & { status?: number }) => e);
+        expect(failed).toMatchObject({ status: 503, message: "Reminders aren't available right now." });
+        seen.push(String(failed?.stack));
+
+        fresh();
+        expect(await push.runReminders(utc("2026-11-08T15:10:00Z"))).toEqual({ skipped: "unavailable" });
+        fresh();
+        expect(await push.vapidKeysOrNull()).toBeNull();
+
+        state.user = ada;
+        fresh();
+        const config = await import("@/app/api/push/config/route");
+        const subs = await import("@/app/api/push/subscriptions/route");
+        const cfg = await config.GET();
+        expect(await cfg.clone().json()).toEqual({ enabled: false, publicKey: null });
+        seen.push(await cfg.text());
+        fresh();
+        const sub = await subs.POST(json("POST", { endpoint: `${FCM}y`, keys: webPushKeys() }));
+        expect(sub.status).toBe(503);
+        seen.push(await sub.text());
+
+        // The premise: Drizzle's own error does carry the parameters, so without the wrapper this would leak.
+        const pair = state.pairs[0];
+        const raw = await dbm.db().insert(dbm.schema.appSettings).values({ id: 1, vapidPublicKey: pair.publicKey, vapidPrivateKey: pair.privateKey, vapidKeyId: "abcdef12" }).then(() => null, (e: Error) => e);
+        expect(raw?.message).toContain(pair.privateKey);
+      } finally {
+        await sql`drop trigger if exists pu_boom on app_settings`;
+        await sql`drop function if exists pu_boom()`;
+      }
+      expect(state.pairs.length).toBeGreaterThan(0);
+      for (const { privateKey } of state.pairs) {
+        for (const text of [...lines, ...seen]) expect(text).not.toContain(privateKey);
+      }
+      // And the logs did record that it failed.
+      expect(lines.join("\n")).toContain("VAPID key load failed (P0001)");
+    });
+
+    it("sets a statement timeout on the pool, so a stuck query can't hold a reminder run", async () => {
+      const [row] = await dbm.db().execute<{ statement_timeout: string }>(dsql`show statement_timeout`);
+      expect(row.statement_timeout).toBe("30s");
     });
 
     it("is cached per process, sharing one in-flight load", async () => {
