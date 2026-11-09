@@ -16,11 +16,19 @@ export function db(): Db {
       max: Number(process.env.DB_POOL_MAX ?? 5),
       idle_timeout: 20,
       connect_timeout: 10,
+      // No statement may hold a connection (or a reminder run) for long; every query here is small and indexed.
+      connection: { statement_timeout: 30_000 },
     });
     globalForDb.sql = sql;
     globalForDb.db = drizzle(sql, { schema });
   }
   return globalForDb.db;
+}
+
+/** The raw postgres.js client behind `db()`, for session-level work such as a reserved connection. */
+export function client(): postgres.Sql {
+  db();
+  return globalForDb.sql!;
 }
 
 /** Cheap connectivity check for the health endpoint. */

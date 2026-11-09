@@ -8,7 +8,20 @@ const nextConfig: NextConfig = {
   // opt in later if it has mostly public, cacheable pages.
   cacheComponents: false,
   // Keep the Postgres driver out of the bundle; it is loaded at runtime.
-  serverExternalPackages: ["postgres"],
+  serverExternalPackages: ["postgres", "web-push"],
+  async headers() {
+    return [
+      {
+        // The service worker must never be served stale, or a fixed worker could take days to reach users.
+        source: "/sw.js",
+        headers: [
+          { key: "Content-Type", value: "application/javascript; charset=utf-8" },
+          { key: "Cache-Control", value: "no-cache" },
+          { key: "Service-Worker-Allowed", value: "/" },
+        ],
+      },
+    ];
+  },
   turbopack: {
     rules: {
       "*.css": {

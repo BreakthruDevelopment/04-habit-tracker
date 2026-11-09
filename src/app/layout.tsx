@@ -16,6 +16,7 @@ const plexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: { default: APP_TITLE, template: `%s · ${APP_TITLE}` },
   description: APP_DESCRIPTION,
+  appleWebApp: { capable: true, title: "Habits" },
 };
 
 export const viewport: Viewport = {
