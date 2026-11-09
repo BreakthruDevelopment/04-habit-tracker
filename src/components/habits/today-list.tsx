@@ -6,6 +6,7 @@ import { useRef, useState } from "react";
 import { Panel, buttonPrimary } from "@/components/ui";
 import { plural, weekdayName } from "@/lib/format";
 import { CheckInControl, type CheckInState } from "./check-in-control";
+import { TodayHints } from "./today-hints";
 import { type Dot, WeekDots } from "./week-dots";
 
 export type TodayItem = {
@@ -59,7 +60,7 @@ function fromApi(body: { habits?: Record<string, unknown>[] }): TodayItem[] | nu
   }));
 }
 
-export function TodayList({ date, initial }: { date: string; initial: TodayItem[] }) {
+export function TodayList({ date, initial, reminderSet = false }: { date: string; initial: TodayItem[]; reminderSet?: boolean }) {
   const router = useRouter();
   const [habits, setHabits] = useState(initial);
   const busy = useRef(0);
@@ -111,7 +112,10 @@ export function TodayList({ date, initial }: { date: string; initial: TodayItem[
     );
   }
 
+  const checkIns = habits.reduce((n, h) => n + h.week.dots.filter((d) => d.done).length, 0);
+
   return (
+    <>
     <Panel
       title="Today's habits"
       action={
@@ -161,5 +165,7 @@ export function TodayList({ date, initial }: { date: string; initial: TodayItem[
         ))}
       </ul>
     </Panel>
+    <TodayHints checkIns={checkIns} reminderSet={reminderSet} />
+    </>
   );
 }

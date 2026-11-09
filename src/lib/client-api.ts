@@ -55,3 +55,22 @@ export async function sendJson(
     };
   }
 }
+
+export const REQUEST_TIMEOUT_MS = 10_000;
+
+/** GET from a same-origin route with a timeout. Network errors and timeouts become a failure, as with `sendJson`. */
+export async function getJson(url: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<{ ok: true; data: unknown } | ({ ok: false } & ApiFailure)> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return { ok: false, ...(await readFailure(res)) };
+    return { ok: true, data: await res.json().catch(() => null) };
+  } catch (err) {
+    const aborted = err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError");
+    return {
+      ok: false,
+      status: aborted ? -1 : 0,
+      message: aborted ? "That took too long." : "Couldn't reach the server. Check your connection and try again.",
+      fields: {},
+    };
+  }
+}
