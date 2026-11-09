@@ -51,3 +51,9 @@ export const REMINDER_MAX_USERS_PER_RUN = 500;
 export const PUSH_SEND_CONCURRENCY = 10;
 export const PUSH_TIMEOUT_MS = 10_000;
 export const PUSH_TTL_SECONDS = 4 * 60 * 60;
+
+// Weekly coach
+/** `generate()` calls per user per hour (every attempt counts, cached answers don't). */
+export const COACH_CALLS_PER_HOUR = 6;
+/** Regenerations of one week's summary after the first. */
+export const COACH_MAX_REFRESHES = 2;

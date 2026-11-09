@@ -13,7 +13,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.mts",
     "db:seed": "tsx scripts/seed.mts",
-    "smoke": "bash scripts/smoke.sh"
+    "smoke": "bash scripts/smoke.sh",
+    "eval:coach": "AI_PROVIDER=gemini vitest run test/ai-evals.test.ts"
   },
   "dependencies": {
     "better-auth": "^1.7.15",
