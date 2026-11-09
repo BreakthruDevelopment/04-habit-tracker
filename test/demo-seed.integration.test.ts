@@ -326,22 +326,25 @@ describe.skipIf(!url)("demo workspace (Postgres, Better Auth)", () => {
     expect((await snapshot()).habits).toHaveLength(14);
   }, 120000);
 
-  it("reservations and a second load during a load answer 429 'already running' at once instead of exhausting the pool", async () => {
-    const running = load();
-    await new Promise((r) => setTimeout(r, 300));
-    const started = Date.now();
-    const calls = await Promise.race([
-      Promise.allSettled([...Array.from({ length: 3 }, () => loadReserved()), load()]),
-      new Promise<"hung">((r) => setTimeout(() => r("hung"), 8000)),
-    ]);
-    expect(calls).not.toBe("hung");
-    expect(Date.now() - started).toBeLessThan(5000);
-    for (const c of calls as PromiseSettledResult<unknown>[]) {
-      expect(c.status).toBe("rejected");
-      expect((c as PromiseRejectedResult).reason).toMatchObject({ status: 429, message: expect.stringMatching(/already running/) });
-    }
-    expect(await running).toMatchObject({ users: 3, habits: 14 });
-    expect((await snapshot()).habits).toHaveLength(14);
+  it("reservations and a second load while a load holds the lock answer 429 'already running' at once instead of exhausting the pool", async () => {
+    // Hold the load lock from the test's own connection, so the outcome doesn't depend on how fast a real load runs.
+    await sql.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtextextended('demo-load', 0))`;
+      const started = Date.now();
+      const calls = await Promise.race([
+        Promise.allSettled([...Array.from({ length: 4 }, () => loadReserved()), load()]),
+        new Promise<"hung">((r) => setTimeout(() => r("hung"), 8000)),
+      ]);
+      expect(calls).not.toBe("hung");
+      expect(Date.now() - started).toBeLessThan(5000);
+      for (const c of calls as PromiseSettledResult<unknown>[]) {
+        expect(c.status).toBe("rejected");
+        expect((c as PromiseRejectedResult).reason).toMatchObject({ status: 429, message: expect.stringMatching(/already running/) });
+      }
+    });
+    // Nothing was reserved or loaded, and once the lock is free a load goes through.
+    expect(await sql`select 1 from rate_event where kind = 'demo_load'`).toHaveLength(0);
+    expect(await loadReserved()).toMatchObject({ users: 3, habits: 14 });
   }, 60000);
 
   it("a failed route load gives back the day's reservation", async () => {
