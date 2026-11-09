@@ -13,7 +13,7 @@ import { ConflictError, TooManyRequestsError } from "@/lib/errors";
 import { log } from "@/lib/log";
 import { streaks, weekSummary } from "@/lib/progress";
 import { addDays, isoWeek, isoWeekday, localToday } from "@/lib/time";
-import { releaseDaily, reserveDaily } from "@/lib/usage";
+import { reserveDaily } from "@/lib/usage";
 import { buildCoachInput, coachInputHash, coachOutputSchema, hasActivity, storedStats, tailorDemo } from "@/lib/weekly-coach";
 
 const PEOPLE = ["Ada", "Ben", "Cleo"] as const;
@@ -130,33 +130,24 @@ const LOCK_KEY = "demo-load";
 const tryLock = (tx: Pick<ReturnType<typeof db>, "execute">) =>
   tx.execute<{ ok: boolean }>(sql`select pg_try_advisory_xact_lock(hashtextextended(${LOCK_KEY}, 0)) as ok`);
 
-/**
- * Atomic global reservation: one load per minute and `DEMO_LOADS_PER_DAY` per UTC day for the whole
- * app. The lock and one transaction mean concurrent requests cannot both pass, and a refusal on
- * either limit leaves no trace.
- */
-export async function reserveDemoLoad(actor: Actor): Promise<void> {
-  assertCan(actor, "delete"); // no resource: admin only
-  const { rateEvent } = schema;
-  await db().transaction(async (tx) => {
-    // Never wait here: a waiting request would hold a pool connection while the load needs several.
-    const [{ ok }] = await tryLock(tx);
-    if (!ok) throw new TooManyRequestsError("A demo load is already running. Try again shortly.");
-    const any = eq(rateEvent.kind, "demo_load");
-    await tx.delete(rateEvent).where(and(any, sql`${rateEvent.at} <= now() - interval '1 minute'`));
-    const [{ n }] = await tx.select({ n: count() }).from(rateEvent).where(and(any, gt(rateEvent.at, sql`now() - interval '1 minute'`)));
-    if (n) throw new TooManyRequestsError("Demo workspace can be loaded once per minute. Try again shortly.");
-    if (!(await reserveDaily(tx, "demo_load", DEMO_LOADS_PER_DAY))) {
-      throw new TooManyRequestsError("The demo workspace was loaded the maximum number of times today. Try again tomorrow.");
-    }
-    await tx.insert(rateEvent).values({ userId: actor.id, kind: "demo_load" });
-  });
-  log.info("admin.demo_load", { by: actor.id });
-}
+type Tx = Parameters<Parameters<ReturnType<typeof db>["transaction"]>[0]>[0];
 
-/** Give back the day's reservation when the load it paid for failed, so failures don't burn the quota. */
-export async function releaseDemoLoad(): Promise<void> {
-  await db().transaction((tx) => releaseDaily(tx, "demo_load"));
+/**
+ * Atomic global reservation: one load per minute and `DEMO_LOADS_PER_DAY` per UTC day for the whole app. Takes no
+ * lock of its own: the caller (`loadDemoWorkspace`) already holds the load lock in this transaction, so the winner of
+ * the lock is also the one that reserves, with no gap between the two. A refusal throws and leaves no trace; and if
+ * the load later fails, the transaction rolls the reservation back with it.
+ */
+async function reserveLocked(tx: Tx, actor: Actor): Promise<void> {
+  const { rateEvent } = schema;
+  const any = eq(rateEvent.kind, "demo_load");
+  await tx.delete(rateEvent).where(and(any, sql`${rateEvent.at} <= now() - interval '1 minute'`));
+  const [{ n }] = await tx.select({ n: count() }).from(rateEvent).where(and(any, gt(rateEvent.at, sql`now() - interval '1 minute'`)));
+  if (n) throw new TooManyRequestsError("Demo workspace can be loaded once per minute. Try again shortly.");
+  if (!(await reserveDaily(tx, "demo_load", DEMO_LOADS_PER_DAY))) {
+    throw new TooManyRequestsError("The demo workspace was loaded the maximum number of times today. Try again tomorrow.");
+  }
+  await tx.insert(rateEvent).values({ userId: actor.id, kind: "demo_load" });
 }
 
 export type DemoLoadResult = { users: number; habits: number; checkIns: number; coachSummaries: number };
@@ -165,7 +156,12 @@ export type DemoLoadResult = { users: number; habits: number; checkIns: number; 
  * Default is the safe admin-route mode. CLI mode independently rechecks all guards.
  * `now` is only for tests; no HTTP input reaches it.
  */
-export async function loadDemoWorkspace(actor: Actor, options: unknown = { mode: "admin" }, now: Date = new Date()): Promise<DemoLoadResult> {
+export async function loadDemoWorkspace(
+  actor: Actor,
+  options: unknown = { mode: "admin" },
+  now: Date = new Date(),
+  { reserve = false }: { reserve?: boolean } = {},
+): Promise<DemoLoadResult> {
   assertCan(actor, "delete");
   const parsed = optionsSchema.parse(options);
   // Hold the lock on a dedicated transaction for the whole load so the CLI and the route cannot
@@ -174,6 +170,11 @@ export async function loadDemoWorkspace(actor: Actor, options: unknown = { mode:
   return db().transaction(async (tx) => {
     const [{ ok }] = await tryLock(tx);
     if (!ok) throw new TooManyRequestsError("A demo load is already running. Try again shortly.");
+    // The route's reservation happens here, under the same lock, and rolls back with a failed load.
+    if (reserve) {
+      await reserveLocked(tx, actor);
+      log.info("admin.demo_load", { by: actor.id });
+    }
     const result = await loadLocked(actor, parsed.mode, now);
     log.info("demo.loaded", { by: actor.id, mode: parsed.mode, ...result });
     return result;
@@ -275,20 +276,26 @@ async function loadLocked(actor: Actor, mode: "admin" | "cli", now: Date): Promi
   const fixture = coachOutputSchema.parse(demoFixtures["weekly-coach"]);
   for (const name of PEOPLE) {
     const owner = people.get(name)!;
-    const lastWeek = isoWeek(addDays(localToday(ZONES[name], now), -7));
-    const input = buildCoachInput(await weekSummary(owner, lastWeek, now), await streaks(owner, now));
-    if (!hasActivity(input)) continue;
-    await db().insert(schema.coachSummary).values({
-      userId: owner.id,
-      isoWeek: lastWeek,
-      data: coachOutputSchema.parse(tailorDemo(fixture, input)),
-      stats: storedStats(input),
-      mode: "demo",
-      inputHash: coachInputHash(input, model),
-      regenerations: 0,
-      modelCalls: 0,
-    });
-    coachSummaries += 1;
+    // One user's summary failing must not undo the rest of a load that already committed. Log the name of the
+    // error only: a database error's message carries the query and its parameters.
+    try {
+      const lastWeek = isoWeek(addDays(localToday(ZONES[name], now), -7));
+      const input = buildCoachInput(await weekSummary(owner, lastWeek, now), await streaks(owner, now));
+      if (!hasActivity(input)) continue;
+      await db().insert(schema.coachSummary).values({
+        userId: owner.id,
+        isoWeek: lastWeek,
+        data: coachOutputSchema.parse(tailorDemo(fixture, input)),
+        stats: storedStats(input),
+        mode: "demo",
+        inputHash: coachInputHash(input, model),
+        regenerations: 0,
+        modelCalls: 0,
+      });
+      coachSummaries += 1;
+    } catch (err) {
+      log.error("demo.coach_seed_failed", { person: name, errorName: err instanceof Error ? err.name : typeof err });
+    }
   }
   return { users: people.size, habits, checkIns, coachSummaries };
 }

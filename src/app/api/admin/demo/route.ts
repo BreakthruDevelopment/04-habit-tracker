@@ -1,6 +1,6 @@
 import { requireRole } from "@/lib/auth/session";
 import { requireSameOrigin } from "@/lib/csrf";
-import { loadDemoWorkspace, releaseDemoLoad, reserveDemoLoad } from "@/lib/demo-workspace";
+import { loadDemoWorkspace } from "@/lib/demo-workspace";
 import { errorResponse } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
@@ -15,13 +15,8 @@ export async function POST(request: Request) {
   try {
     const actor = await requireRole("admin");
     requireSameOrigin(request);
-    await reserveDemoLoad(actor);
-    try {
-      return Response.json(await loadDemoWorkspace(actor));
-    } catch (err) {
-      await releaseDemoLoad().catch(() => undefined);
-      throw err;
-    }
+    // Reserve and load in one transaction under one lock: a failed load rolls the reservation back.
+    return Response.json(await loadDemoWorkspace(actor, { mode: "admin" }, new Date(), { reserve: true }));
   } catch (err) {
     return errorResponse(err);
   }

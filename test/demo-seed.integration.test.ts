@@ -97,6 +97,9 @@ describe.skipIf(!url)("demo workspace (Postgres, Better Auth)", () => {
   });
 
   const load = (mode: "cli" | "admin" = "cli") => loader.loadDemoWorkspace(actor, { mode }, NOW);
+  /** An admin-mode load that also reserves the day's slot, as the route does. */
+  const loadReserved = (who: { id: string; role: "admin" | "user" } = actor) =>
+    loader.loadDemoWorkspace(who, { mode: "admin" }, NOW, { reserve: true });
   const demoIds = async () => (await sql`select id from "user" where email in ${sql(demoEmails)} order by email`).map((r) => r.id as string);
 
   async function snapshot() {
@@ -261,7 +264,7 @@ describe.skipIf(!url)("demo workspace (Postgres, Better Auth)", () => {
   it("the loader refuses non-admins and unknown options", async () => {
     await expect(loader.loadDemoWorkspace(real)).rejects.toMatchObject({ status: 403 });
     await expect(loader.loadDemoWorkspace(actor, { mode: "cli", password: "override" })).rejects.toMatchObject({ name: "ZodError" });
-    await expect(loader.reserveDemoLoad(real)).rejects.toMatchObject({ status: 403 });
+    await expect(loadReserved(real)).rejects.toMatchObject({ status: 403 });
     expect((await snapshot()).habits).toHaveLength(0);
   });
 
@@ -290,29 +293,45 @@ describe.skipIf(!url)("demo workspace (Postgres, Better Auth)", () => {
 
   it("allows 5 loads per UTC day app-wide, then refuses without changing data", async () => {
     for (let i = 0; i < 5; i++) {
-      await loader.reserveDemoLoad(actor);
+      await loadReserved();
       await sql`delete from rate_event where kind = 'demo_load'`; // skip the minute wait
     }
-    await expect(loader.reserveDemoLoad(actor)).rejects.toMatchObject({ status: 429 });
+    const before = await snapshot();
+    await expect(loadReserved()).rejects.toMatchObject({ status: 429 });
     expect((await sql`select count from daily_usage where kind = 'demo_load'`)[0].count).toBe(5);
     expect((await post(req())).status).toBe(429);
-    expect((await snapshot()).habits).toHaveLength(0);
-  });
+    expect(await sql`select 1 from rate_event where kind = 'demo_load'`).toHaveLength(0);
+    expect(await snapshot()).toEqual(before);
+  }, 120000);
 
-  it("reserves one call under concurrency and expires the minute window", async () => {
-    const results = await Promise.allSettled([loader.reserveDemoLoad(actor), loader.reserveDemoLoad(actor)]);
+  it("reserves one load under concurrency and expires the minute window", async () => {
+    const results = await Promise.allSettled([loadReserved(), loadReserved()]);
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     for (const r of results) if (r.status === "rejected") expect(r.reason).toMatchObject({ status: 429 });
+    await expect(loadReserved()).rejects.toMatchObject({ status: 429, message: expect.stringMatching(/once per minute/) });
     await sql`update rate_event set at = now() - interval '61 seconds' where kind = 'demo_load'`;
-    await loader.reserveDemoLoad(actor);
-  });
+    await loadReserved();
+  }, 90000);
+
+  it("regression: five parallel POSTs, round after round, give exactly one 200 (the lock winner is never refused)", async () => {
+    for (let round = 0; round < 3; round++) {
+      await sql`delete from rate_event where kind = 'demo_load'`;
+      await sql`delete from daily_usage`;
+      const res = await Promise.all(Array.from({ length: 5 }, () => post(req())));
+      const codes = res.map((r) => r.status).sort();
+      expect(codes, `round ${round}`).toEqual([200, 429, 429, 429, 429]);
+      expect((await sql`select count from daily_usage where kind = 'demo_load'`)[0].count).toBe(1);
+      expect(await sql`select 1 from rate_event where kind = 'demo_load'`).toHaveLength(1);
+    }
+    expect((await snapshot()).habits).toHaveLength(14);
+  }, 120000);
 
   it("reservations and a second load during a load answer 429 'already running' at once instead of exhausting the pool", async () => {
     const running = load();
     await new Promise((r) => setTimeout(r, 300));
     const started = Date.now();
     const calls = await Promise.race([
-      Promise.allSettled([...Array.from({ length: 3 }, () => loader.reserveDemoLoad(actor)), load()]),
+      Promise.allSettled([...Array.from({ length: 3 }, () => loadReserved()), load()]),
       new Promise<"hung">((r) => setTimeout(() => r("hung"), 8000)),
     ]);
     expect(calls).not.toBe("hung");
@@ -329,7 +348,10 @@ describe.skipIf(!url)("demo workspace (Postgres, Better Auth)", () => {
     const collision = await api.api.createUser({ body: { email: "ada@demo.breakthru.test", name: "Real Ada", password: base.DEMO_PASSWORD } });
     expect(collision.user.id).toBeTruthy();
     expect((await post(req())).status).toBe(409);
-    expect((await sql`select count from daily_usage where kind = 'demo_load'`)[0].count).toBe(0);
+    // The reservation lives in the load's transaction, so a failed load leaves no trace at all.
+    expect(await sql`select 1 from daily_usage where kind = 'demo_load' and count > 0`).toHaveLength(0);
+    expect(await sql`select 1 from rate_event where kind = 'demo_load'`).toHaveLength(0);
+    expect((await post(req())).status).toBe(409); // not 429: the minute window wasn't burned either
   }, 30000);
 
   it("refuses to adopt an unrelated account at a demo address, and nothing is replaced", async () => {
@@ -357,4 +379,85 @@ describe.skipIf(!url)("demo workspace (Postgres, Better Auth)", () => {
     expect((await signUp({ email: "ds-signup-marker@test.local", image: "urn:breakthru:habit-demo:v1" })).status).toBe(400);
     expect(await load()).toMatchObject({ users: 3 });
   }, 60000);
+
+  it("a stale demo-user rate ledger is cleared on reload", async () => {
+    await load();
+    const [{ id: adaId }] = await sql`select id from "user" where email = 'ada@demo.breakthru.test'`;
+    for (const kind of ["checkin", "habit_write", "coach"]) await sql`insert into rate_event (user_id, kind) values (${adaId}, ${kind})`;
+    await load();
+    expect(await sql`select 1 from rate_event where user_id = ${adaId}`).toHaveLength(0);
+  }, 60000);
+
+  it("uses each user's own time zone for the latest day and the summary week", async () => {
+    const LATE = new Date("2026-11-09T03:00:00Z"); // Sun evening in Denver, Mon morning in London and Kolkata
+    await loader.loadDemoWorkspace(actor, { mode: "cli" }, LATE);
+    const latest = await sql`select u.email, max(c.local_date)::text as latest from check_in c join "user" u on u.id = c.owner_id
+      where u.email in ${sql(demoEmails)} group by u.email order by u.email`;
+    expect(latest.map((r) => r.latest)).toEqual(["2026-11-08", "2026-11-09", "2026-11-09"]);
+    const weeks = await sql`select u.email, s.iso_week from coach_summary s join "user" u on u.id = s.user_id where u.email in ${sql(demoEmails)} order by u.email`;
+    expect(weeks.map((r) => r.iso_week)).toEqual(["2026-W44", "2026-W45", "2026-W45"]);
+  }, 60000);
+
+  it("a failing coach seed for one user is logged without a message and lowers the count instead of throwing", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const prev = process.env.LOG_LEVEL;
+    process.env.LOG_LEVEL = "error";
+    try {
+      const { db } = await import("@/lib/db");
+      const real = db().insert.bind(db());
+      let calls = 0;
+      vi.spyOn(db(), "insert").mockImplementation(((table: unknown) => {
+        const name = (table as { [k: symbol]: unknown })?.[Symbol.for("drizzle:Name")];
+        if (name === "coach_summary" && ++calls === 2) throw new Error("boom with secret-param-xyz");
+        return real(table as never);
+      }) as never);
+      const out = await load();
+      expect(out).toMatchObject({ users: 3, habits: 14, coachSummaries: 2 });
+      const lines = spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("demo.coach_seed_failed"));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toMatch(/boom|secret-param/);
+      expect((await snapshot()).habits).toHaveLength(14);
+    } finally {
+      vi.restoreAllMocks();
+      process.env.LOG_LEVEL = prev;
+    }
+  }, 60000);
+
+  describe("auth hooks keep demo identities off every request-driven path", () => {
+    const origin = { origin: "http://localhost:3000", "content-type": "application/json" };
+    const call = (path: string, body: unknown, cookie = "") =>
+      api.handler(new Request(`http://localhost:3000/api/auth/${path}`, { method: "POST", headers: { ...origin, ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) }));
+    const cookieOf = (r: Response) => r.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
+    const MARK = "urn:breakthru:habit-demo:v1";
+
+    it("update-user cannot set the marker or a demo email on a normal account", async () => {
+      const ok = await call("sign-up/email", { name: "Pat", email: "ds-signup-pat@test.local", password: base.DEMO_PASSWORD });
+      expect(ok.status).toBe(200);
+      const cookie = cookieOf(ok);
+      expect((await call("update-user", { image: MARK }, cookie)).status).toBe(400);
+      expect((await sql`select image from "user" where email = 'ds-signup-pat@test.local'`)[0].image).toBeNull();
+    });
+
+    it("an admin cannot create or update a user into a demo identity either", async () => {
+      const signed = await call("sign-up/email", { name: "Root", email: "ds-signup-root@test.local", password: base.DEMO_PASSWORD });
+      await sql`update "user" set role = 'admin' where email = 'ds-signup-root@test.local'`;
+      const cookie = cookieOf(signed);
+      const before = Number((await sql`select count(*) n from "user"`)[0].n);
+
+      for (const body of [{ email: "mallory@demo.breakthru.test", name: "M", password: base.DEMO_PASSWORD, role: "user" }, { email: "ds-signup-m@test.local", name: "M", password: base.DEMO_PASSWORD, role: "user", data: { image: MARK } }]) {
+        const res = await call("admin/create-user", body, cookie);
+        expect(res.status, JSON.stringify(body)).toBe(400);
+      }
+      expect(Number((await sql`select count(*) n from "user"`)[0].n)).toBe(before);
+
+      const [victim] = await sql`insert into "user" (id, name, email, role) values ('ds-signup-victim', 'V', 'ds-signup-victim@test.local', 'user') returning id`;
+      for (const data of [{ image: MARK }, { email: "ben@demo.breakthru.test" }]) {
+        const res = await call("admin/update-user", { userId: victim.id, data }, cookie);
+        // The marker is refused by the hook (400); changing an email is already refused by the role (no set-email, 403).
+        expect([400, 403], JSON.stringify(data)).toContain(res.status);
+      }
+      expect(await sql`select image, email from "user" where id = ${victim.id}`).toEqual([{ image: null, email: "ds-signup-victim@test.local" }]);
+      await sql`delete from "user" where id = 'ds-signup-victim'`;
+    });
+  });
 });
