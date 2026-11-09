@@ -131,6 +131,33 @@ req "$JAR_A" DELETE "/api/habits/$yes_id"; expect 204 "delete habit"
 req "$JAR_A" GET "/api/habits/$yes_id"; expect 404 "deleted habit"
 pass "habit deleted"
 
+# --- Web push: service worker, manifest, config, subscriptions (never sends: a test push would reach a real service) ---
+headers=$(curl -fsS -D - -o /dev/null "$BASE_URL/sw.js") || fail "/sw.js not served"
+echo "$headers" | grep -qi '^content-type: application/javascript' || fail "/sw.js content type: $headers"
+echo "$headers" | grep -qi '^cache-control: no-cache' || fail "/sw.js must be no-cache: $headers"
+curl -fsS "$BASE_URL/sw.js" | grep -q 'addEventListener("push"' || fail "/sw.js has no push handler"
+curl -fsS "$BASE_URL/sw.js" | grep -q 'addEventListener("fetch"' && fail "/sw.js must not have a fetch handler"
+curl -fsS "$BASE_URL/manifest.webmanifest" | jq -e '.display == "standalone" and .start_url == "/today" and .short_name == "Habits" and (.icons | length) >= 3' >/dev/null || fail "manifest shape"
+curl -fsS "$BASE_URL/api/health" | jq -e '.push == "on"' >/dev/null || fail "health should report push on"
+code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/api/push/config")
+[ "$code" = "401" ] || fail "signed-out push config should be 401, got $code"
+req "$JAR_A" GET /api/push/config; expect 200 "push config"
+echo "$BODY" | jq -e '.enabled == true and (.publicKey | length) == 87 and (keys | sort) == ["enabled","publicKey"]' >/dev/null || fail "push config shape (public key only): $BODY"
+
+sub=$(node -e 'const c=require("node:crypto");const e=c.createECDH("prime256v1");e.generateKeys();process.stdout.write(JSON.stringify({endpoint:"https://fcm.googleapis.com/fcm/send/smoke-"+Date.now(),keys:{p256dh:e.getPublicKey().toString("base64url"),auth:c.randomBytes(16).toString("base64url")}}))')
+req "$JAR_A" POST /api/push/subscriptions "$(echo "$sub" | jq -c '.endpoint="https://evil.example/x"')"; expect 400 "subscribe with a non-push host"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -X POST -H 'content-type: application/json' -H 'origin: https://evil.example' -d "$sub" "$BASE_URL/api/push/subscriptions")
+[ "$code" = "403" ] || fail "cross-origin subscribe should be 403, got $code"
+req "$JAR_A" POST /api/push/test; expect 400 "test push with no device"
+req "$JAR_A" POST /api/push/subscriptions "$sub"; expect 201 "subscribe"
+endpoint=$(echo "$sub" | jq -r .endpoint)
+req "$JAR_A" GET /api/push/subscriptions; expect 200 "list devices"
+echo "$BODY" | jq -e --arg e "$endpoint" '.devices | length == 1 and .[0].endpoint == $e' >/dev/null || fail "device list: $BODY"
+req "$JAR_B" GET /api/push/subscriptions; echo "$BODY" | jq -e '.devices | length == 0' >/dev/null || fail "another user sees devices: $BODY"
+req "$JAR_B" DELETE /api/push/subscriptions "{\"endpoint\":\"$endpoint\"}"; expect 404 "another user removing a device"
+req "$JAR_A" DELETE /api/push/subscriptions "{\"endpoint\":\"$endpoint\"}"; expect 204 "remove device"
+pass "push: service worker, manifest, config, subscribe, remove"
+
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{}' "$BASE_URL/api/auth/sign-out")
 [ "$code" = "200" ] || fail "sign-out should be 200, got $code"
 pass "user signed out"

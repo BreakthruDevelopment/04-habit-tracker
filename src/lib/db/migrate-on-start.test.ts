@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 const pingDb = vi.fn();
 vi.mock("@/lib/db", () => ({ pingDb: () => pingDb() }));
+const vapid = vi.hoisted(() => ({ loaded: false, getVapidKeys: vi.fn() }));
+vi.mock("@/lib/vapid", () => ({ vapidLoaded: () => vapid.loaded, getVapidKeys: vapid.getVapidKeys }));
 
 import { GET } from "@/app/api/health/route";
 import { migrateOnStart, migrationState, whenMigrated } from "./migrate-on-start";
@@ -13,6 +15,8 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 beforeEach(() => {
   delete (globalThis as Record<symbol, unknown>)[KEY];
   pingDb.mockResolvedValue(true);
+  vapid.loaded = false;
+  vapid.getVapidKeys.mockRejectedValue(new Error("no keys"));
 });
 
 describe("migrateOnStart", () => {
@@ -69,6 +73,16 @@ describe("/api/health", () => {
     const res = await GET();
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ checks: { migrations: "ok" } });
+  });
+
+  it("reports push on once the VAPID keys load, and off when they can't (never a key)", async () => {
+    let body = await (await GET()).json();
+    expect(body.push).toBe("off");
+    expect((await GET()).status).toBe(200);
+    vapid.getVapidKeys.mockResolvedValue({ publicKey: "pub", privateKey: "secret-private", keyId: "abcd1234" });
+    body = await (await GET()).json();
+    expect(body.push).toBe("on");
+    expect(JSON.stringify(body)).not.toContain("secret-private");
   });
 
   it("is 503 when the database is unreachable", async () => {

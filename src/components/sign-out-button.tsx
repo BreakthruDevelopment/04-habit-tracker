@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { signOut } from "@/lib/auth/client";
+import { disablePush } from "@/lib/push-client";
 import { buttonSecondary } from "./ui/styles";
 
 export function SignOutButton() {
@@ -24,6 +25,8 @@ export function SignOutButton() {
         setPending(true);
         setFailed(false);
         try {
+          // Remove this device's reminder subscription first, while the session still exists (best effort).
+          await disablePush();
           const result = await signOut();
           if (result.error) {
             setFailed(true);

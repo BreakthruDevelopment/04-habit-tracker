@@ -23,6 +23,12 @@ export function db(): Db {
   return globalForDb.db;
 }
 
+/** The raw postgres.js client behind `db()`, for session-level work such as a reserved connection. */
+export function client(): postgres.Sql {
+  db();
+  return globalForDb.sql!;
+}
+
 /** Cheap connectivity check for the health endpoint. */
 export async function pingDb(): Promise<boolean> {
   try {

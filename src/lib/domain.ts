@@ -37,3 +37,17 @@ export const STREAK_LOOKBACK_DAYS = 400;
 export const PROGRESS_WEEKS = 52;
 export const HEATMAP_DAYS = 30;
 export const HEATMAP_MAX_DAYS = 90;
+
+/** Web push: per-user limits and what counts as a dead subscription. */
+export const SUBSCRIBES_PER_HOUR = 20;
+export const TEST_PUSHES_PER_HOUR = 3;
+export const PUSH_MAX_FAILURES = 10;
+export const PUSH_STALE_DAYS = 60;
+/** Reminders go out from the chosen time until this long after it (never past local midnight). */
+export const REMINDER_WINDOW_HOURS = 3;
+/** A user isn't reminded again within this many hours, even if their local date repeats (zone change). */
+export const REMINDER_MIN_GAP_HOURS = 12;
+export const REMINDER_MAX_USERS_PER_RUN = 500;
+export const PUSH_SEND_CONCURRENCY = 10;
+export const PUSH_TIMEOUT_MS = 10_000;
+export const PUSH_TTL_SECONDS = 4 * 60 * 60;
