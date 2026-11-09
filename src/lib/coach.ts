@@ -1,32 +1,33 @@
 import "server-only";
-import { eq, inArray, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { ZodError, z } from "zod";
 import { configuredModel } from "@/lib/ai";
 import { AiError } from "@/lib/ai/types";
 import { type Actor, ForbiddenError, UnauthorizedError, assertCan } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
-import { COACH_CALLS_PER_HOUR, COACH_MAX_REFRESHES } from "@/lib/domain";
+import { COACH_CALLS_PER_HOUR, COACH_CLAIM_SECONDS, COACH_MAX_CALLS, COACH_MAX_REFRESHES } from "@/lib/domain";
 import { env } from "@/lib/env";
-import { BadRequestError, HttpError, TooManyRequestsError } from "@/lib/errors";
+import { BadRequestError, ConflictError, HttpError, TooManyRequestsError } from "@/lib/errors";
 import { log } from "@/lib/log";
+import { skippedOutput } from "@/lib/coach-guardrails";
 import { ownedBy } from "@/lib/owned";
 import { streaks, weekSummary } from "@/lib/progress";
 import { getLocalDay } from "@/lib/settings";
 import { isoWeek, parseIsoWeek, weekIndex } from "@/lib/time";
-import { advisoryLock, consumeRate, reserveDaily } from "@/lib/usage";
+import { advisoryLock, consumeRate, releaseDaily, releaseRate, reserveDaily } from "@/lib/usage";
 import {
   type CoachMode,
   type CoachOutput,
   type StoredStats,
   buildCoachInput,
-  buildCoachPrompt,
   coachInputHash,
   composeCoach,
   hasActivity,
   storedStats,
 } from "@/lib/weekly-coach";
 
-const { coachSummary, habit } = schema;
+const { coachSummary, coachClaim, habit } = schema;
 
 export const REFRESH_CAP_MESSAGE = "This week's summary has been refreshed twice; it updates next week";
 export const HOURLY_CAP_MESSAGE = "You've asked the coach for a lot of summaries this hour. Try again later.";
@@ -121,6 +122,11 @@ async function resolveWeek(actor: Actor, label: string | null | undefined, now: 
 
 type Row = typeof coachSummary.$inferSelect;
 
+/** Refreshes left after `calls` stored model calls: 2 before the first, then 2, 1, 0. */
+function refreshesLeft(calls: number): number {
+  return Math.max(0, COACH_MAX_CALLS - Math.max(calls, 1));
+}
+
 async function toView(actor: Actor, week: string, row: Row | undefined): Promise<CoachView> {
   if (!row) return { week, summary: null, refreshesLeft: COACH_MAX_REFRESHES };
   const stats = row.stats as StoredStats;
@@ -150,7 +156,7 @@ async function toView(actor: Actor, week: string, row: Row | undefined): Promise
       mode: row.mode,
       generatedAt: row.generatedAt.toISOString(),
     },
-    refreshesLeft: Math.max(0, COACH_MAX_REFRESHES - row.regenerations),
+    refreshesLeft: refreshesLeft(row.modelCalls),
   };
 }
 
@@ -175,17 +181,22 @@ export type CoachGenerateResult = CoachView & {
   cached: boolean;
 };
 
-/** Concurrent requests for the same user and week in this process share one run (the advisory lock covers other processes). */
+export const CLAIM_MESSAGE = "This week's summary is being generated. Try again in a moment.";
+
+/** Concurrent requests for the same user and week in this process share one run (the claim covers other processes). */
 const inflight = new Map<string, Promise<CoachGenerateResult>>();
 
 /**
  * Generate (or regenerate) the summary for this week or last week.
  *
- * Under an advisory lock on (user, week): the same input hash returns the stored row with no call; a week with
- * no check-ins stores the fixed fresh-start message with no call; changed data regenerates up to twice
- * (`REFRESH_CAP_MESSAGE` after that); every real call spends one of the user's 6 per hour and one of the app's
- * `COACH_DAILY_CAP` per day, both inside the same transaction, so a race can't overshoot either.
- * A provider outage throws the `AiError` (502 or 429) and stores nothing; the attempt still counts.
+ * 1. A short transaction, under an advisory lock on (user, week): the same input hash returns the stored row; a week
+ *    with no check-ins stores the fixed fresh-start message (no call); otherwise the call cap (3 stored calls a
+ *    week: the summary and two refreshes) is checked, a claim row is taken (409 if another request holds a fresh
+ *    one), and one of the user's 6 calls an hour and one of the app's `COACH_DAILY_CAP` a day is spent.
+ * 2. The model call, outside any transaction: no connection or row lock is held while the model thinks.
+ * 3. A second short transaction deletes the claim by token and stores the answer, but only if the row is still as
+ *    it was in step 1. A failed call (provider outage, or a live provider's failure answered from the demo fixture)
+ *    deletes the claim and refunds both caps; nothing is stored and any existing summary stays.
  */
 export async function generateCoach(actor: Actor, label?: string | null, now: Date = new Date()): Promise<CoachGenerateResult> {
   assertCan(actor, "create");
@@ -203,133 +214,138 @@ export async function generateCoach(actor: Actor, label?: string | null, now: Da
   }
 }
 
-/**
- * At most this many summaries are being generated in one process at a time. Each holds a pooled connection (the
- * transaction, and its advisory lock, stay open during the model call), and the pool has 5; the rest of the app
- * must keep getting connections while the model thinks.
- */
-const MAX_CONCURRENT_RUNS = 2;
-let active = 0;
-const waiting: (() => void)[] = [];
-
-async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
-  if (active >= MAX_CONCURRENT_RUNS) await new Promise<void>((resolve) => waiting.push(resolve));
-  else active += 1;
-  try {
-    return await fn();
-  } finally {
-    const next = waiting.shift();
-    if (next) next(); // hand the slot straight over
-    else active -= 1;
-  }
-}
+type Plan = { kind: "done"; row: Row; cached: boolean } | { kind: "claimed"; token: string; before: Row | undefined };
 
 async function runGenerate(actor: Actor, week: string, now: Date): Promise<CoachGenerateResult> {
   const e = env();
-  // Set inside the transaction; read after it commits. (A holder object, so TypeScript doesn't narrow them away.)
-  const flags: { providerError?: AiError; limit?: CoachLimitError } = {};
-
-  // Read the stats before the transaction: it holds one of the pool's few connections, and a query inside it that
-  // needs another one would deadlock the pool once enough requests arrived together.
+  // Everything read from the pool happens here, outside the transactions, which only hold a connection briefly.
   const summary = await weekSummary(actor, week, now);
   const input = buildCoachInput(summary, await streaks(actor, now));
   const model = configuredModel();
-  const inputHash = coachInputHash(buildCoachPrompt(input).statsJson, model);
+  const inputHash = coachInputHash(input, model);
+  const empty = !hasActivity(input);
+  const lockName = `coach:${actor.id}:${week}`;
+  const selectRow = (tx: Pick<ReturnType<typeof db>, "select">) =>
+    tx.select().from(coachSummary).where(ownedBy(coachSummary, actor, eq(coachSummary.isoWeek, week)));
 
-  let outcome: { row: Row | undefined; cached: boolean };
+  // Step 1.
+  let plan: Plan;
   try {
-    outcome = await withSlot(transact);
+    plan = await db().transaction(async (tx): Promise<Plan> => {
+      await advisoryLock(tx, lockName);
+      const [existing] = await selectRow(tx);
+      if (existing && existing.inputHash === inputHash) {
+        log.info("coach.cached", { task: "weekly-coach", mode: existing.mode, habits: input.habits.length });
+        return { kind: "done", row: existing, cached: true };
+      }
+
+      if (empty) {
+        // No model call: store the fixed message. Whatever the week had before stays counted in `model_calls`.
+        const values = { data: skippedOutput(input), stats: storedStats(input), mode: "skipped" as const, inputHash };
+        const [row] = await tx
+          .insert(coachSummary)
+          .values({ userId: actor.id, isoWeek: week, ...values })
+          .onConflictDoUpdate({ target: [coachSummary.userId, coachSummary.isoWeek], set: { ...values, generatedAt: sql`now()` } })
+          .returning();
+        log.info("coach.generate", { task: "weekly-coach", mode: "skipped", habits: input.habits.length, called: false });
+        return { kind: "done", row, cached: false };
+      }
+
+      // The cap holds whatever the existing row is, a skipped one included: unchecking everything and checking
+      // back in must not buy a fresh call.
+      if (existing && existing.modelCalls >= COACH_MAX_CALLS) throw new CoachLimitError(REFRESH_CAP_MESSAGE, "refresh_cap");
+
+      const token = randomUUID();
+      const claimed = await tx
+        .insert(coachClaim)
+        .values({ userId: actor.id, isoWeek: week, token })
+        .onConflictDoUpdate({
+          target: [coachClaim.userId, coachClaim.isoWeek],
+          set: { token, claimedAt: sql`now()` },
+          setWhere: sql`${coachClaim.claimedAt} < now() - make_interval(secs => ${COACH_CLAIM_SECONDS})`,
+        })
+        .returning({ token: coachClaim.token });
+      if (claimed.length === 0) throw new ConflictError(CLAIM_MESSAGE);
+
+      // A refusal throws, which rolls back the claim and the rate row with it.
+      try {
+        await consumeRate(tx, actor.id, "coach", COACH_CALLS_PER_HOUR, HOURLY_CAP_MESSAGE);
+      } catch (err) {
+        if (err instanceof TooManyRequestsError) throw new CoachLimitError(HOURLY_CAP_MESSAGE, "hourly");
+        throw err;
+      }
+      if (!(await reserveDaily(tx, "coach", e.COACH_DAILY_CAP))) throw new CoachLimitError(DAILY_CAP_MESSAGE, "daily_cap");
+      return { kind: "claimed", token, before: existing };
+    });
   } catch (err) {
     // A cap thrown inside the transaction (it rolled back, so nothing was spent) still gets the cached summary attached.
     if (err instanceof CoachLimitError && !err.view) {
-      const [row] = await db().select().from(coachSummary).where(ownedBy(coachSummary, actor, eq(coachSummary.isoWeek, week)));
+      const [row] = await selectRow(db());
       err.view = await toView(actor, week, row);
     }
     throw err;
   }
+  if (plan.kind === "done") return { ...(await toView(actor, week, plan.row)), cached: plan.cached };
 
-  if (flags.providerError) throw flags.providerError;
-  if (flags.limit) {
-    flags.limit.view = await toView(actor, week, outcome.row);
-    throw flags.limit;
+  // Step 2: no transaction, no connection held.
+  const { token, before } = plan;
+  let result;
+  try {
+    result = await composeCoach(input);
+    if (result.called && result.mode === "demo" && model !== "demo") {
+      // A live provider failed and `generate()` answered from the demo fixture. That is not this week's summary.
+      throw new AiError("The coach's model is unavailable right now. Try again in a moment.", "provider");
+    }
+  } catch (err) {
+    log.warn("coach.call_failed", { task: "weekly-coach", kind: err instanceof AiError ? err.kind : "unexpected", habits: input.habits.length });
+    await db().transaction(async (tx) => {
+      await tx.delete(coachClaim).where(and(eq(coachClaim.userId, actor.id), eq(coachClaim.isoWeek, week), eq(coachClaim.token, token)));
+      // A failed call spends nothing.
+      await releaseRate(tx, actor.id, "coach");
+      await releaseDaily(tx, "coach");
+    });
+    throw err;
   }
-  return { ...(await toView(actor, week, outcome.row)), cached: outcome.cached };
 
-  function transact() {
-    return db().transaction(async (tx) => {
-    await advisoryLock(tx, `coach:${actor.id}:${week}`);
+  // Step 3.
+  const outcome = await db().transaction(async (tx): Promise<{ row: Row | undefined; stored: boolean }> => {
+    await advisoryLock(tx, lockName);
+    const mine = await tx
+      .delete(coachClaim)
+      .where(and(eq(coachClaim.userId, actor.id), eq(coachClaim.isoWeek, week), eq(coachClaim.token, token)))
+      .returning({ token: coachClaim.token });
+    const [current] = await selectRow(tx);
+    // The claim was taken over (this call outlived it), or the row changed since step 1: the stored answer stands.
+    const unchanged = current?.modelCalls === before?.modelCalls && current?.inputHash === before?.inputHash;
+    if (mine.length === 0 || !unchanged) return { row: current, stored: false };
 
-    const [existing] = await tx.select().from(coachSummary).where(ownedBy(coachSummary, actor, eq(coachSummary.isoWeek, week)));
-
-    if (existing && existing.inputHash === inputHash) {
-      log.info("coach.cached", { task: "weekly-coach", mode: existing.mode, habits: input.habits.length });
-      return { row: existing, cached: true };
-    }
-
-    // Replacing a real summary is a refresh; replacing the fixed "no check-ins" message is not.
-    const prev = existing && existing.mode !== "skipped" ? existing : undefined;
-    const empty = !hasActivity(input);
-    if (!empty && prev && prev.regenerations >= COACH_MAX_REFRESHES) {
-      flags.limit = new CoachLimitError(REFRESH_CAP_MESSAGE, "refresh_cap");
-      return { row: existing, cached: true };
-    }
-
-    if (!empty) {
-      try {
-        await consumeRate(tx, actor.id, "coach", COACH_CALLS_PER_HOUR, HOURLY_CAP_MESSAGE);
-      } catch (err) {
-        if (err instanceof TooManyRequestsError) {
-          flags.limit = new CoachLimitError(HOURLY_CAP_MESSAGE, "hourly");
-          return { row: existing, cached: true };
-        }
-        throw err;
-      }
-      if (!(await reserveDaily(tx, "coach", e.COACH_DAILY_CAP))) {
-        // The rate row above is rolled back with this transaction: nothing was spent.
-        throw new CoachLimitError(DAILY_CAP_MESSAGE, "daily_cap");
-      }
-    }
-
-    let result;
-    try {
-      result = await composeCoach(input);
-    } catch (err) {
-      // An outage still counts as an attempt (the charge commits); nothing is stored.
-      if (err instanceof AiError && err.kind !== "input_rejected") {
-        flags.providerError = err;
-        log.warn("coach.provider_failed", { task: "weekly-coach", kind: err.kind, habits: input.habits.length });
-        return { row: existing, cached: true };
-      }
-      throw err;
-    }
-
-    const regenerations = prev && !empty ? prev.regenerations + 1 : (existing?.regenerations ?? 0);
+    const modelCalls = (before?.modelCalls ?? 0) + 1;
     const values = {
       data: result.data,
       stats: storedStats(input),
       mode: result.mode,
       inputHash,
-      regenerations,
+      modelCalls,
+      regenerations: Math.max(0, modelCalls - 1),
     };
     const [row] = await tx
       .insert(coachSummary)
       .values({ userId: actor.id, isoWeek: week, ...values })
-      .onConflictDoUpdate({
-        target: [coachSummary.userId, coachSummary.isoWeek],
-        set: { ...values, generatedAt: sql`now()` },
-      })
+      .onConflictDoUpdate({ target: [coachSummary.userId, coachSummary.isoWeek], set: { ...values, generatedAt: sql`now()` } })
       .returning();
-    log.info("coach.generate", {
-      task: "weekly-coach",
-      mode: result.mode,
-      habits: input.habits.length,
-      called: result.called,
-      latencyMs: result.latencyMs,
-      guardrails: result.codes,
-      valuesDropped: result.valuesDropped,
-      regenerations,
-    });
-    return { row, cached: false };
-    });
-  }
+    return { row, stored: true };
+  });
+  if (!outcome.row) throw new ConflictError(CLAIM_MESSAGE);
+  log.info("coach.generate", {
+    task: "weekly-coach",
+    mode: result.mode,
+    habits: input.habits.length,
+    called: result.called,
+    latencyMs: result.latencyMs,
+    guardrails: result.codes,
+    valuesDropped: result.valuesDropped,
+    stored: outcome.stored,
+    modelCalls: outcome.row.modelCalls,
+  });
+  return { ...(await toView(actor, week, outcome.row)), cached: !outcome.stored };
 }

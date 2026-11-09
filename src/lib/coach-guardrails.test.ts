@@ -4,13 +4,13 @@ import {
   allowedNumbers,
   applyGuardrails,
   fallbackOutput,
+  habitWinLine,
   hasHealthLanguage,
   hasInventedNumber,
   hasShameLanguage,
   numbersIn,
   skippedOutput,
 } from "./coach-guardrails";
-import { buildCoachPrompt } from "./weekly-coach";
 
 describe("health language", () => {
   it.each([
@@ -40,12 +40,11 @@ describe("health language", () => {
     "A secure routine",
     "Pair it with something you already do",
     "Try a smaller version on busy days",
-    "Take vitamins streak: 3 weeks",
   ])("lets %s through", (t) => expect(hasHealthLanguage(t)).toBe(false));
 });
 
 describe("shame language", () => {
-  it.each(["You were lazy", "a total Failure", "so disappointing", "pathetic", "You failed"])("flags %s", (t) => expect(hasShameLanguage(t)).toBe(true));
+  it.each(["You were lazy", "a total Failure", "so disappointing", "pathetic", "You failed", "so weak", "a disgrace", "such a loser", "hopeless", "embarrassed"])("flags %s", (t) => expect(hasShameLanguage(t)).toBe(true));
   it.each(["A fresh start", "Fail-safe plan"].slice(0, 1))("lets %s through", (t) => expect(hasShameLanguage(t)).toBe(false));
 });
 
@@ -53,8 +52,15 @@ describe("numbers", () => {
   it("reads digits, decimals, thousands and spelled-out numbers (not 'one')", () => {
     expect(numbersIn("12 km, 2.5 l, 1,000 steps, twice, three days, one step")).toEqual([12, 2.5, 1000, 2, 3]);
   });
+  it("reads allowed numbers from the numeric fields only: not names, not H-ids", () => {
+    const input = week([habit(1, { name: "Run 5k in 2024", goal: 4, doneDays: 3, lastWeekDoneDays: 2, streak: { mode: "week", current: 1, best: 3 } })]);
+    const allowed = allowedNumbers(input);
+    for (const n of [7, 4, 3, 2, 1, 2026, 45]) expect(allowed.has(n)).toBe(true);
+    for (const n of [5, 2024, 6, 20, 12]) expect(allowed.has(n)).toBe(false);
+    expect(hasInventedNumber("your 5k run", allowed)).toBe(true);
+  });
   it("allows what the stats contain, and 7", () => {
-    const allowed = allowedNumbers(buildCoachPrompt(benWeek()).statsJson);
+    const allowed = allowedNumbers(benWeek());
     expect(hasInventedNumber("You read on 6 days of 7, goal 5.", allowed)).toBe(false);
     expect(hasInventedNumber("You read on 9 days.", allowed)).toBe(true);
     expect(hasInventedNumber("Read nine times", allowed)).toBe(true);
@@ -64,7 +70,7 @@ describe("numbers", () => {
 
 describe("applyGuardrails", () => {
   const input = benWeek();
-  const allowed = allowedNumbers(buildCoachPrompt(input).statsJson);
+  const allowed = allowedNumbers(input);
   const ok = { headline: "Great week", summary: "You read on 6 days.", wins: [{ habit: "H1", text: "Six" }], focus: [], nextStep: "Keep going." };
 
   it("passes a clean answer unchanged", () => {
@@ -101,6 +107,14 @@ describe("applyGuardrails", () => {
   });
 });
 
+describe("wording", () => {
+  it("uses the singular for one day", () => {
+    const input = week([habit(1, { goal: 3, doneDays: 1 })], { isCurrent: true, daysElapsed: 1 });
+    expect(habitWinLine(input, "H1")).toBe("You checked in on 1 of 1 day so far.");
+    expect(habitWinLine({ ...input, daysElapsed: 2 }, "H1")).toBe("You checked in on 1 of 2 days so far.");
+  });
+});
+
 describe("deterministic text passes its own guardrails", () => {
   const inputs = [
     benWeek(),
@@ -109,7 +123,7 @@ describe("deterministic text passes its own guardrails", () => {
     week([]),
   ];
   it.each(inputs.map((i, n) => [n, i] as const))("fallback and skipped text, input %i", (_n, input) => {
-    const allowed = allowedNumbers(buildCoachPrompt(input).statsJson);
+    const allowed = allowedNumbers(input);
     for (const out of [fallbackOutput(input), skippedOutput(input)]) {
       const r = applyGuardrails(out, input, allowed);
       expect(r.codes).toEqual([]);

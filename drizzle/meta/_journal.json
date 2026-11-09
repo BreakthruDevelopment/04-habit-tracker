@@ -36,6 +36,13 @@
       "when": 1794182058190,
       "tag": "0004_checkin-local-date-idx",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794185082775,
+      "tag": "0005_coach-claims",
+      "breakpoints": true
     }
   ]
 }

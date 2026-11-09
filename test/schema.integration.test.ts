@@ -65,7 +65,7 @@ describe.skipIf(!url)("habit schema (Postgres)", () => {
     const rows = await sql`select table_name from information_schema.tables where table_schema = 'public'`;
     const tables = rows.map((r) => r.table_name as string);
     expect(tables).not.toContain("item");
-    for (const t of ["habit", "check_in", "user_settings", "push_subscription", "coach_summary", "app_settings", "daily_usage", "rate_event"]) {
+    for (const t of ["habit", "check_in", "user_settings", "push_subscription", "coach_summary", "coach_claim", "app_settings", "daily_usage", "rate_event"]) {
       expect(tables).toContain(t);
     }
   });

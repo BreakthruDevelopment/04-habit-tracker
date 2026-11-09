@@ -57,3 +57,7 @@ export const PUSH_TTL_SECONDS = 4 * 60 * 60;
 export const COACH_CALLS_PER_HOUR = 6;
 /** Regenerations of one week's summary after the first. */
 export const COACH_MAX_REFRESHES = 2;
+/** Real model calls per user per week: the first summary and its refreshes. Skipped (empty) weeks don't count. */
+export const COACH_MAX_CALLS = 1 + COACH_MAX_REFRESHES;
+/** A generation claim older than this is stale and can be taken over (the provider timeout is 20 s). */
+export const COACH_CLAIM_SECONDS = 45;

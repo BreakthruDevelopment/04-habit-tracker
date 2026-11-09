@@ -56,6 +56,7 @@ describe.skipIf(!url)("weekly coach (Postgres)", () => {
   async function clean() {
     await sql`delete from habit where owner_id like 'co-%'`;
     await sql`delete from coach_summary where user_id like 'co-%'`;
+    await sql`delete from coach_claim where user_id like 'co-%'`;
     await sql`delete from user_settings where user_id like 'co-%'`;
     await sql`delete from rate_event where user_id like 'co-%'`;
     await sql`delete from daily_usage`;
@@ -205,10 +206,15 @@ describe.skipIf(!url)("weekly coach (Postgres)", () => {
     vi.resetModules();
     const other = await import("@/lib/coach");
     expect(other).not.toBe(coach);
-    const results = await Promise.all([coach.generateCoach(ada, null, NOW), other.generateCoach(ada, null, NOW), other.generateCoach(ada, null, NOW)]);
+    const results = await Promise.allSettled([coach.generateCoach(ada, null, NOW), other.generateCoach(ada, null, NOW), other.generateCoach(ada, null, NOW)]);
     expect(state.generate).toHaveBeenCalledTimes(1);
-    expect(new Set(results.map((r) => r.summary?.generatedAt)).size).toBe(1);
+    // The loser in the other instance holds no in-process dedupe: it is turned away by the claim (409) or sees the stored row.
+    for (const r of results) {
+      if (r.status === "rejected") expect(r.reason).toMatchObject({ status: 409 });
+    }
+    expect(results.some((r) => r.status === "fulfilled")).toBe(true);
     expect(await rateCount(ada)).toBe(1);
+    expect(Number((await sql`select count(*) n from coach_claim`)[0].n)).toBe(0);
   });
 
   it("the hourly cap (6) holds when requests race", async () => {
@@ -288,16 +294,160 @@ describe.skipIf(!url)("weekly coach (Postgres)", () => {
     expect(await get.json()).toMatchObject({ summary: null, refreshesLeft: 2 });
   });
 
-  it("a provider outage returns the AiError, stores nothing, and still counts the attempt", async () => {
+  it("a provider outage returns the AiError, stores nothing, releases the claim and refunds both caps", async () => {
     await habitWith(ada, "Read", ["2026-11-02"]);
     state.generate.mockRejectedValue(new AiError("Model quota reached", "quota", 429));
     await expect(post(ada)).rejects.toMatchObject({ kind: "quota" });
     expect(Number((await sql`select count(*) n from coach_summary`)[0].n)).toBe(0);
-    expect(await rateCount(ada)).toBe(1);
+    expect(Number((await sql`select count(*) n from coach_claim`)[0].n)).toBe(0);
+    expect(await rateCount(ada)).toBe(0);
+    expect(await dailyCoach()).toBe(0);
     // Retrying once the provider is back works, and counts as the first generation, not a refresh.
     state.generate.mockImplementation(actualGenerate);
     const ok = await post(ada);
     expect(ok.refreshesLeft).toBe(2);
+    expect(await rateCount(ada)).toBe(1);
+  });
+
+  it("a failed refresh keeps the existing summary and its counts", async () => {
+    const h = await habitWith(ada, "Read", ["2026-11-02"]);
+    const first = await post(ada);
+    await checkins.setCheckIn(ada, h.id, "2026-11-03", {}, NOW);
+    state.generate.mockRejectedValue(new AiError("Model provider unreachable", "provider"));
+    await expect(post(ada)).rejects.toMatchObject({ kind: "provider" });
+    const kept = await coach.getCoach(ada, null, NOW);
+    expect(kept.summary?.generatedAt).toBe(first.summary?.generatedAt);
+    expect(kept.refreshesLeft).toBe(2);
+    expect(await rateCount(ada)).toBe(1);
+    expect(await dailyCoach()).toBe(1);
+  });
+
+  it("a live provider's failure answered from the demo fixture is an error, not a cached summary", async () => {
+    await habitWith(ada, "Read", ["2026-11-02", "2026-11-03"]);
+    process.env.AI_PROVIDER = "gemini";
+    process.env.GEMINI_API_KEY = "test-key";
+    process.env.AI_FALLBACK_TO_DEMO = "true";
+    envMod.resetEnvCache();
+    const fetchStub = vi.fn(async () => new Response("quota", { status: 429 }));
+    vi.stubGlobal("fetch", fetchStub);
+    try {
+      await expect(post(ada)).rejects.toMatchObject({ kind: "provider" });
+      expect(fetchStub).toHaveBeenCalled();
+      expect(Number((await sql`select count(*) n from coach_summary`)[0].n)).toBe(0);
+      expect(await rateCount(ada)).toBe(0);
+      expect(await dailyCoach()).toBe(0);
+
+      // And plain demo mode still works afterwards.
+      process.env.AI_PROVIDER = "demo";
+      envMod.resetEnvCache();
+      const demoFirst = await post(ada);
+      expect(demoFirst.summary?.mode).toBe("demo");
+    } finally {
+      vi.unstubAllGlobals();
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.AI_FALLBACK_TO_DEMO;
+    }
+  });
+
+  it("unchecking everything and checking back in cannot loop the call cap", async () => {
+    const h = await habitWith(ada, "Read", []);
+    const days = ["2026-11-02", "2026-11-03", "2026-11-04"];
+    const results: string[] = [];
+    for (let round = 0; round < 5; round++) {
+      await checkins.setCheckIn(ada, h.id, days[0], {}, NOW);
+      try {
+        results.push((await post(ada)).summary?.mode ?? "none");
+      } catch (err) {
+        results.push(`${(err as { reason?: string }).reason ?? "error"}`);
+      }
+      await checkins.clearCheckIn(ada, h.id, days[0], NOW);
+      try {
+        await post(ada); // the week is empty again: stores the fresh-start message, no call
+      } catch (err) {
+        results.push(`empty:${(err as { reason?: string }).reason ?? "error"}`);
+      }
+    }
+    expect(state.generate).toHaveBeenCalledTimes(3);
+    expect(results.filter((r) => r === "refresh_cap").length).toBeGreaterThanOrEqual(2);
+    const [row] = await sql`select mode, model_calls, regenerations from coach_summary where user_id = ${ada.id}`;
+    expect(row.model_calls).toBe(3);
+    expect(row.mode).toBe("skipped");
+    // Checking in a different way doesn't help either.
+    await checkins.setCheckIn(ada, h.id, days[1], {}, NOW);
+    await expect(post(ada)).rejects.toMatchObject({ status: 429, reason: "refresh_cap" });
+    expect(state.generate).toHaveBeenCalledTimes(3);
+  });
+
+  describe("claims: no lock is held through the model call", () => {
+    it("two different users generating at the same time do not serialize", async () => {
+      await habitWith(ada, "Read", ["2026-11-02"]);
+      await habitWith(ben, "Walk", ["2026-11-02"]);
+      // Each call waits until the other has started. If one user's request held a lock the other needed
+      // (the daily_usage row, say), this would never resolve and the test would time out.
+      const started: string[] = [];
+      let release!: () => void;
+      const both = new Promise<void>((r) => (release = r));
+      state.generate.mockImplementation(async (req: never) => {
+        started.push("x");
+        if (started.length === 2) release();
+        await both;
+        return actualGenerate(req);
+      });
+      const [a, b] = await Promise.all([post(ada), post(ben)]);
+      expect(a.summary?.mode).toBe("demo");
+      expect(b.summary?.mode).toBe("demo");
+      expect(state.generate).toHaveBeenCalledTimes(2);
+      expect(await dailyCoach()).toBe(2);
+    }, 10_000);
+
+    it("a model call holds no open transaction", async () => {
+      await habitWith(ada, "Read", ["2026-11-02"]);
+      let idleInTx = -1;
+      state.generate.mockImplementation(async (req: never) => {
+        const rows = await sql`select count(*) n from pg_stat_activity where datname = current_database() and state like 'idle in transaction%'`;
+        idleInTx = Number(rows[0].n);
+        return actualGenerate(req);
+      });
+      await post(ada);
+      expect(idleInTx).toBe(0);
+    });
+
+    it("a fresh claim turns a second request away with 409, and a stale one (over 45 s) is taken over", async () => {
+      await habitWith(ada, "Read", ["2026-11-02"]);
+      await sql`insert into coach_claim (user_id, iso_week, token) values (${ada.id}, ${W45}, gen_random_uuid())`;
+      await expect(post(ada)).rejects.toMatchObject({ status: 409 });
+      expect(state.generate).not.toHaveBeenCalled();
+      expect(await rateCount(ada)).toBe(0);
+      expect(await dailyCoach()).toBe(0);
+
+      await sql`update coach_claim set claimed_at = now() - interval '46 seconds' where user_id = ${ada.id}`;
+      const r = await post(ada);
+      expect(r.summary?.mode).toBe("demo");
+      expect(Number((await sql`select count(*) n from coach_claim`)[0].n)).toBe(0);
+    });
+
+    it("a call that outlives its claim does not overwrite the answer that took over", async () => {
+      const h = await habitWith(ada, "Read", ["2026-11-02"]);
+      // A second module instance, so the in-process dedupe doesn't hand the inner request this very run.
+      vi.resetModules();
+      const other = await import("@/lib/coach");
+      let first = true;
+      state.generate.mockImplementation(async (req: never) => {
+        if (first) {
+          first = false;
+          // While this (slow) call runs, its claim goes stale and a second request completes the week.
+          await sql`update coach_claim set claimed_at = now() - interval '60 seconds' where user_id = ${ada.id}`;
+          await other.generateCoach(ada, null, NOW);
+        }
+        return actualGenerate(req);
+      });
+      const slow = await post(ada);
+      expect(state.generate).toHaveBeenCalledTimes(2);
+      expect(slow.cached).toBe(true); // its own answer was dropped; the stored one is returned
+      const [row] = await sql`select model_calls from coach_summary where user_id = ${ada.id}`;
+      expect(row.model_calls).toBe(1);
+      expect(h.id).toBeDefined();
+    });
   });
 
   it("stores a rejected model answer as the deterministic fallback", async () => {

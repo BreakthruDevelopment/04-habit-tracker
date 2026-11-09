@@ -235,7 +235,11 @@ export const coachSummary = pgTable(
     stats: jsonb("stats").notNull(),
     mode: text("mode", { enum: COACH_MODES }).notNull(),
     inputHash: char("input_hash", { length: 64 }).notNull(),
+    // Refreshes after the first call: max(model_calls - 1, 0).
     regenerations: smallint("regenerations").notNull().default(0),
+    // Real model calls whose answer was stored for this week. Capped at 3 (one summary and two refreshes), so
+    // unchecking everything (a "skipped" row) and checking back in can't loop the cap.
+    modelCalls: smallint("model_calls").notNull().default(0),
     generatedAt: ts("generated_at").notNull().defaultNow(),
   },
   (t) => [
@@ -244,7 +248,26 @@ export const coachSummary = pgTable(
     check("coach_summary_mode_chk", sql`${t.mode} in (${list(COACH_MODES)})`),
     check("coach_summary_hash_chk", sql`${t.inputHash} ~ '^[0-9a-f]{64}$'`),
     check("coach_summary_regen_chk", sql`${t.regenerations} between 0 and 2`),
+    check("coach_summary_calls_chk", sql`${t.modelCalls} between 0 and 3`),
   ],
+);
+
+/**
+ * A request that is generating this week's summary right now. Taken in a short transaction, held across the model
+ * call (which runs outside any transaction), and deleted by token when the answer is stored. A claim older than 45 s
+ * is stale and can be taken over, so a crashed request never blocks the week.
+ */
+export const coachClaim = pgTable(
+  "coach_claim",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    isoWeek: char("iso_week", { length: 8 }).notNull(),
+    token: uuid("token").notNull(),
+    claimedAt: ts("claimed_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.isoWeek] })],
 );
 
 /**

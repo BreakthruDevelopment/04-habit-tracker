@@ -48,7 +48,7 @@ const texts = (d: CoachOutput) => [d.headline, d.summary, d.nextStep, ...d.wins.
 
 /** What every answer must satisfy, however it was produced. */
 function invariants(input: CoachInput, d: CoachOutput) {
-  const allowed = allowedNumbers(buildCoachPrompt(input).statsJson);
+  const allowed = allowedNumbers(input);
   const known = new Set(input.habits.map((h) => h.id));
   for (const t of texts(d)) {
     expect(hasHealthLanguage(t), `health language: ${t}`).toBe(false);
@@ -130,36 +130,61 @@ describe(`weekly coach evals (${live ? "live model" : "stubbed model"})`, () => 
 });
 
 describe("demo fixture plumbing (real generate(), AI_PROVIDER=demo)", () => {
-  it("answers from the recorded fixture, labelled demo, pointed at the user's real habits", async () => {
+  const demo = () => {
     vi.stubEnv("AI_PROVIDER", "demo");
     resetEnvCache();
+  };
+  const fixtureNextStep = "Pick the hardest day next week and plan a smaller version of each habit for it.";
+
+  it("headline and summary always come from the user's numbers, labelled as a demo; the fixture gives the next step", async () => {
+    demo();
     const input = benWeek();
     const result = await composeCoach(input);
     expect(result.mode).toBe("demo");
     expect(result.called).toBe(true);
-    expect(result.data.summary).toMatch(/Demo summary \(recorded, not from a live model\)/);
+    expect(result.data.summary).toMatch(/^Demo summary \(built from your numbers, not from a live model\): /);
+    expect(result.data.summary).toContain("You checked in 8 times across 2 habits");
+    expect(result.data.nextStep).toBe(fixtureNextStep);
     expect(result.data.wins.map((w) => w.habit)).toEqual(["H1"]);
     expect(result.data.focus.map((f) => f.habit)).toEqual(["H2"]);
     invariants(input, result.data);
   });
 
-  it("does not overclaim on a light week, and still says it is a demo", async () => {
-    vi.stubEnv("AI_PROVIDER", "demo");
-    resetEnvCache();
-    const input = week([habit(1, { goal: 5, doneDays: 1 }), habit(2, { goal: 4, doneDays: 0, values: Array(7).fill(null) })]);
-    const result = await composeCoach(input);
-    expect(result.mode).toBe("demo");
-    expect(result.data.summary).toMatch(/^Demo summary \(built from your numbers, not from a live model\)/);
-    expect(result.data.summary).not.toMatch(/most days|momentum/);
-    invariants(input, result.data);
+  it("never claims momentum the numbers don't show, on a light week or a strong one", async () => {
+    demo();
+    const light = week([habit(1, { goal: 5, doneDays: 1 }), habit(2, { goal: 4, doneDays: 0, values: Array(7).fill(null) })]);
+    const strong = week([habit(1, { goal: 3, doneDays: 7 }), habit(2, { goal: 4, doneDays: 6 })]);
+    for (const input of [light, strong]) {
+      const result = await composeCoach(input);
+      expect(result.mode).toBe("demo");
+      expect(result.data.summary).toMatch(/^Demo summary \(built from your numbers/);
+      expect(result.data.summary).not.toMatch(/most days|momentum|midweek|strongest stretch/i);
+      expect(result.data.headline).not.toMatch(/steady|momentum/i);
+      invariants(input, result.data);
+    }
+    expect((await composeCoach(light)).data.headline).toMatch(/fresh start/i);
   });
 
   it("one habit: the fixture's second habit (H2) never appears", async () => {
-    vi.stubEnv("AI_PROVIDER", "demo");
-    resetEnvCache();
+    demo();
     const input = week([habit(1, { goal: 3, doneDays: 3 })]);
     const result = await composeCoach(input);
     expect(result.data.focus).toEqual([]);
     invariants(input, result.data);
+  });
+
+  it("works with no network at all", async () => {
+    demo();
+    const fetchSpy = vi.fn(() => Promise.reject(new Error("network is down")));
+    vi.stubGlobal("fetch", fetchSpy);
+    try {
+      const input = benWeek();
+      const result = await composeCoach(input);
+      expect(result.mode).toBe("demo");
+      invariants(input, result.data);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

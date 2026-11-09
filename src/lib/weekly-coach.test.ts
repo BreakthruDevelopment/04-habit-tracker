@@ -44,16 +44,24 @@ describe("the prompt", () => {
     expect(built.prompt).toMatch(/<stats>[\s\S]*"id":"H1"[\s\S]*<\/stats>/);
     expect(built.prompt).not.toContain("00000000-0000");
   });
-  it("is capped: daily values go first, then input_rejected", () => {
+  it("is capped: daily values go first, then names are cut, and it only rejects when nothing fits", () => {
     const input = week(Array.from({ length: 20 }, (_, i) => habit(i + 1, { name: "n".repeat(60), goal: 3, values: Array(7).fill("99999.99") })));
     const full = buildCoachPrompt(input, 100_000);
     expect(full.valuesDropped).toBe(false);
-    const cap = full.prompt.length - 10;
-    const trimmed = buildCoachPrompt(input, cap);
-    expect(trimmed.valuesDropped).toBe(true);
-    expect(trimmed.prompt).not.toContain("99999.99");
-    expect(trimmed.prompt.length).toBeLessThanOrEqual(cap);
+    expect(full.namesCut).toBe(false);
+    const noValues = buildCoachPrompt(input, full.prompt.length - 10);
+    expect(noValues.valuesDropped).toBe(true);
+    expect(noValues.namesCut).toBe(false);
+    expect(noValues.prompt).not.toContain("99999.99");
+    const cut = buildCoachPrompt(input, noValues.prompt.length - 10);
+    expect(cut.namesCut).toBe(true);
+    expect(cut.prompt.length).toBeLessThanOrEqual(noValues.prompt.length - 10);
     expect(() => buildCoachPrompt(input, 500)).toThrowError(expect.objectContaining({ kind: "input_rejected" }));
+  });
+  it("tolerates names that grow when JSON-escaped, instead of rejecting", () => {
+    const input = week(Array.from({ length: 20 }, (_, i) => habit(i + 1, { name: '"'.repeat(60), unit: "\\".repeat(16), kind: "numeric", target: "100000", total: "700000" })));
+    const built = buildCoachPrompt(input);
+    expect(built.prompt.length).toBeLessThanOrEqual(COACH_PROMPT_MAX_CHARS);
   });
   it("fits the default cap at the maximum of 20 habits", () => {
     const input = week(Array.from({ length: 20 }, (_, i) => habit(i + 1, { name: "n".repeat(60), unit: "u".repeat(16), kind: "numeric", target: "100000", total: "700000" })));
@@ -63,13 +71,17 @@ describe("the prompt", () => {
 
 describe("hash and stored stats", () => {
   it("is 64 hex characters and changes with the data or the model", () => {
-    const a = coachInputHash(buildCoachPrompt(benWeek()).statsJson, "demo");
+    const a = coachInputHash(benWeek(), "demo");
     expect(a).toMatch(/^[0-9a-f]{64}$/);
-    expect(coachInputHash(buildCoachPrompt(benWeek()).statsJson, "demo")).toBe(a);
-    expect(coachInputHash(buildCoachPrompt(benWeek()).statsJson, "gemini:x")).not.toBe(a);
+    expect(coachInputHash(benWeek(), "demo")).toBe(a);
+    expect(coachInputHash(benWeek(), "gemini:x")).not.toBe(a);
     const changed = benWeek();
     changed.habits[0].name = "Read more";
-    expect(coachInputHash(buildCoachPrompt(changed).statsJson, "demo")).not.toBe(a);
+    expect(coachInputHash(changed, "demo")).not.toBe(a);
+  });
+  it("ignores the day of the week, so a new day alone is not new data", () => {
+    const a = coachInputHash(benWeek(), "demo");
+    expect(coachInputHash({ ...benWeek(), daysElapsed: 3, isCurrent: true }, "demo")).toBe(a);
   });
   it("stores no names or units", () => {
     const input = week([habit(1, { name: "Secret name", unit: "pages" })]);

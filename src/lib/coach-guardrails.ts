@@ -64,6 +64,20 @@ export const HEALTH_PATTERNS: readonly RegExp[] = [
   /\bmg\b/,
   /\btrauma/,
   /\bpanic/,
+  /\bnurs(?:e|es|ing)\b/,
+  /\bpharmac/,
+  /\bpsycholog/,
+  /\bcounsel/,
+  /\bmeds?\b/,
+  /\bhydrat/,
+  /\bpounds?\b/,
+  /\bsugar/,
+  /\balcohol/,
+  /\blungs?\b/,
+  /\bliver/,
+  /\bmood/,
+  /\bstress/,
+  /\bvitamin/,
 ];
 
 export const SHAME_PATTERNS: readonly RegExp[] = [
@@ -83,6 +97,11 @@ export const SHAME_PATTERNS: readonly RegExp[] = [
   /\bterrible/,
   /\bunderperform/,
   /\bneglect/,
+  /\bweak(?:er|est|ness)?\b/,
+  /\bdisgrace/,
+  /\bloser/,
+  /\bhopeless/,
+  /\bembarrass/,
 ];
 
 /** Lower-case, drop accents and invisible characters, so "Méd​ication" can't slip past a stem. */
@@ -132,11 +151,23 @@ export function numbersIn(text: string): number[] {
   return out;
 }
 
-/** The numbers a text may use: everything in the stats block the model saw, plus 7 (days in a week). */
-export function allowedNumbers(modelStatsJson: string): Set<number> {
-  // Spelled-out words in habit names would otherwise count as numbers; only digits are read from the stats.
+/**
+ * The numbers a text may use: the numeric fields of the stats the model saw, the digits of the week label, and 7 (days
+ * in a week). Read from the structured input, not from the prompt text, so digits in habit names or in the H-ids
+ * (H1 to H20) don't widen what the model may say.
+ */
+export function allowedNumbers(input: CoachInput): Set<number> {
   const allowed = new Set<number>([7]);
-  for (const m of modelStatsJson.matchAll(/\d+(?:\.\d+)?/g)) allowed.add(Number(m[0]));
+  const add = (v: string | number | null | undefined) => {
+    if (v === null || v === undefined) return;
+    for (const m of String(v).matchAll(/\d+(?:\.\d+)?/g)) allowed.add(Number(m[0]));
+  };
+  add(input.week);
+  add(input.daysElapsed);
+  for (const v of Object.values(input.totals)) add(v);
+  for (const h of input.habits) {
+    for (const v of [h.target, h.goal, h.doneDays, h.total, h.lastWeekDoneDays, h.streak.current, h.streak.best, ...h.values]) add(v);
+  }
   return allowed;
 }
 
@@ -149,7 +180,7 @@ export function hasInventedNumber(text: string, allowed: ReadonlySet<number>): b
 // ---------------------------------------------------------------------------
 
 function denominator(input: CoachInput): string {
-  return input.isCurrent && input.daysElapsed < 7 ? `${input.daysElapsed} days so far` : "7 days";
+  return input.isCurrent && input.daysElapsed < 7 ? `${input.daysElapsed} ${input.daysElapsed === 1 ? "day" : "days"} so far` : "7 days";
 }
 
 /** "You checked in on 4 of 7 days." for one habit; `goal` adds the goal when it was reached. */
