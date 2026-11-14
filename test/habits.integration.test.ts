@@ -585,12 +585,54 @@ describe.skipIf(!url)("habits (Postgres)", () => {
       await seed(ada, h.id, ["2026-11-02", "2026-11-03", "2026-10-26", "2026-10-27", "2026-11-08"]);
       const p = await progress.habitProgress(ada, h.id, at("2026-11-08T12:00:00Z"));
       expect(p.weeks).toHaveLength(8);
-      expect(p.weeks.at(-1)).toMatchObject({ week: "2026-W45", doneDays: 3, goalMet: true });
-      expect(p.hitRate).toBe(2 / 8);
+      expect(p.weeks.map((w) => w.week)).toEqual([
+        "2026-W37",
+        "2026-W38",
+        "2026-W39",
+        "2026-W40",
+        "2026-W41",
+        "2026-W42",
+        "2026-W43",
+        "2026-W44",
+      ]);
+      expect(p.weeks.at(-1)).toMatchObject({ week: "2026-W44", doneDays: 2, goalMet: true });
+      expect(p.currentWeek).toMatchObject({ week: "2026-W45", doneDays: 3, goalMet: true });
+      expect(p.hitRate).toBe(1 / 8); // this week is met but still open: not in the rate
       expect(p.streak).toMatchObject({ mode: "week", current: 2 });
       expect(p.recent).toHaveLength(8);
       expect(p.recent[0]).toMatchObject({ date: "2026-11-08", done: true });
       await expect(progress.habitProgress(ben, h.id)).rejects.toMatchObject({ status: 404 });
+    });
+
+    it("computes the 8-week hit rate over completed weeks only when the clock is mid-week", async () => {
+      await reset();
+      await setZone(ada, "UTC");
+      const h = await habitIn(ada, { weeklyGoal: 2 });
+      // Eight completed weeks (W37–W44) all met. This week (W45) has no check-ins and is still reachable.
+      await seed(ada, h.id, [
+        "2026-09-07",
+        "2026-09-08",
+        "2026-09-14",
+        "2026-09-15",
+        "2026-09-21",
+        "2026-09-22",
+        "2026-09-28",
+        "2026-09-29",
+        "2026-10-05",
+        "2026-10-06",
+        "2026-10-12",
+        "2026-10-13",
+        "2026-10-19",
+        "2026-10-20",
+        "2026-10-26",
+        "2026-10-27",
+      ]);
+      const p = await progress.habitProgress(ada, h.id, at("2026-11-04T12:00:00Z")); // Wednesday of W45
+      expect(p.currentWeek).toMatchObject({ week: "2026-W45", monday: "2026-11-02", doneDays: 0, goalMet: false });
+      expect(p.weeks).toHaveLength(8);
+      expect(p.weeks.every((w) => w.goalMet)).toBe(true);
+      expect(p.hitRate).toBe(1);
+      // Counting this week as a miss would make the rate 7/8 until the goal is met later in the week.
     });
   });
 
