@@ -4,7 +4,7 @@ import { habitProgress } from "@/lib/progress";
 
 export const dynamic = "force-dynamic";
 
-/** GET /api/habits/:id/progress: streaks, 8-week goal hit rate and the editable days. Owner only (404 otherwise). */
+/** GET /api/habits/:id/progress: streaks, 8-week goal hit rate (completed weeks) and the editable days. Owner only (404 otherwise). */
 export async function GET(_request: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser();

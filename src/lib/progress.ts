@@ -349,21 +349,31 @@ export async function heatmap(actor: Actor, opts: { days?: unknown; habitId?: st
 // One habit's detail
 // ---------------------------------------------------------------------------
 
+/** One ISO week of a habit: done days against the current weekly goal. */
+export type HabitWeek = { week: string; monday: string; doneDays: number; goalMet: boolean };
+
+/** Completed weeks the goal hit rate is computed over. The in-progress week is shown separately. */
+const HIT_RATE_WEEKS = 8;
+
 export type HabitProgress = {
   habit: HabitView;
   streak: Streak;
-  /** The last 8 ISO weeks, oldest first, each with its done days and whether it met the goal. */
-  weeks: { week: string; monday: string; doneDays: number; goalMet: boolean }[];
+  /** The last 8 *completed* ISO weeks, oldest first. The in-progress week is `currentWeek`. */
+  weeks: HabitWeek[];
+  /** This ISO week. Still open, so it is not in `hitRate`. */
+  currentWeek: HabitWeek;
+  /** Met completed weeks / 8. The in-progress week is excluded even when its goal is already met. */
   hitRate: number;
   /** Today and the 7 days before it (the editable window), newest first. */
   recent: { date: string; value: string | null; done: boolean }[];
 };
 
-/** Streaks, the goal hit rate over 8 weeks and the editable days for one of the actor's habits (404 otherwise). */
+/** Streaks, the goal hit rate over 8 completed weeks and the editable days for one of the actor's habits (404 otherwise). */
 export async function habitProgress(actor: Actor, habitId: string, now: Date = new Date()): Promise<HabitProgress> {
   const h = await getHabit(actor, parseHabitId(habitId));
   const { today: date } = await getLocalDay(actor, now);
-  const firstMonday = addDays(weekBounds(date).monday, -7 * 7);
+  // Eight completed weeks plus this one: a still-open week is not a miss (the rate used to drop every Monday).
+  const firstMonday = addDays(weekBounds(date).monday, -7 * HIT_RATE_WEEKS);
   const [streakMap, rows] = await Promise.all([
     computeStreaks(actor.id, date, h.id, true), // an archived habit keeps its real history
     db()
@@ -372,16 +382,19 @@ export async function habitProgress(actor: Actor, habitId: string, now: Date = n
       .where(ownedBy(checkIn, actor, and(eq(checkIn.habitId, h.id), between(checkIn.localDate, firstMonday, date)))),
   ]);
   const byDate = new Map(rows.map((r) => [r.date, r]));
-  const weeks = Array.from({ length: 8 }, (_, i) => {
+  const allWeeks = Array.from({ length: HIT_RATE_WEEKS + 1 }, (_, i) => {
     const monday = addDays(firstMonday, i * 7);
     let doneDays = 0;
     for (let d = 0; d < 7; d++) if (byDate.get(addDays(monday, d))?.done) doneDays++;
     return { week: isoWeek(monday), monday, doneDays, goalMet: doneDays >= h.weeklyGoal };
   });
+  const weeks = allWeeks.slice(0, HIT_RATE_WEEKS);
+  const currentWeek = allWeeks[HIT_RATE_WEEKS];
   return {
     habit: h,
     streak: streakMap.get(h.id) ?? noStreak(h),
     weeks,
+    currentWeek,
     hitRate: weeks.filter((w) => w.goalMet).length / weeks.length,
     recent: Array.from({ length: 8 }, (_, i) => {
       const d = addDays(date, -i);

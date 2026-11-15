@@ -26,7 +26,7 @@ export default async function HabitDetailPage({ params }: { params: Promise<{ id
     throw err;
   });
   if (!progress) notFound();
-  const { habit, streak, weeks, hitRate, recent } = progress;
+  const { habit, streak, weeks, currentWeek, hitRate, recent } = progress;
   const [map, day] = await Promise.all([heatmap(user, { habitId: habit.id }), getLocalDay(user, new Date())]);
   const archived = habit.archivedAt !== null;
   const createdOn = localTodayFor(day.timeZone, habit.createdAt);
@@ -44,6 +44,25 @@ export default async function HabitDetailPage({ params }: { params: Promise<{ id
       key: "goal",
       header: "Goal",
       cell: (w) => (w.goalMet ? <StatusBadge status="passed" label="Met" /> : <StatusBadge status="not-started" label="Not met" />),
+    },
+  ];
+  const currentColumns: Column<Week>[] = [
+    {
+      key: "week",
+      header: "Week of",
+      primary: true,
+      cell: (w) => (
+        <>
+          This week
+          <span className="mt-0.5 block text-sm font-normal text-muted">{shortDay(w.monday)}</span>
+        </>
+      ),
+    },
+    columns[1],
+    {
+      key: "goal",
+      header: "Goal",
+      cell: (w) => (w.goalMet ? <StatusBadge status="passed" label="Met" /> : <StatusBadge status="building" label="In progress" />),
     },
   ];
 
@@ -100,7 +119,10 @@ export default async function HabitDetailPage({ params }: { params: Promise<{ id
             />
           </Panel>
           <Panel title="Goal hit rate">
-            <DataList caption={`${habit.name}, last 8 weeks`} columns={columns} rows={[...weeks].reverse()} rowKey={(w) => w.week} />
+            <p className="mb-3 text-sm text-muted">This week is still going, so it isn&apos;t in the 8-week rate.</p>
+            <DataList caption={`${habit.name}, this week`} columns={currentColumns} rows={[currentWeek]} rowKey={(w) => w.week} />
+            <h3 className="mb-2 mt-5 text-sm font-semibold">Last 8 completed weeks</h3>
+            <DataList caption={`${habit.name}, last 8 completed weeks`} columns={columns} rows={[...weeks].reverse()} rowKey={(w) => w.week} />
           </Panel>
         </div>
         <Panel title="Edit the last 7 days">
