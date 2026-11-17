@@ -15,7 +15,9 @@
     "db:seed": "tsx scripts/seed.mts",
     "seed:demo": "node --conditions=react-server --import tsx scripts/seed-demo.mts",
     "smoke": "bash scripts/smoke.sh",
-    "eval:coach": "AI_PROVIDER=gemini vitest run test/ai-evals.test.ts"
+    "eval:coach": "AI_PROVIDER=gemini vitest run test/ai-evals.test.ts",
+    "demo": "playwright test -c demo/playwright.config.ts",
+    "demo:ci": "DEMO_HEADLESS=1 DEMO_SLOWMO=0 DEMO_START_DELAY=0 DEMO_FINAL_HOLD=0 DEMO_BEATS=off playwright test -c demo/playwright.config.ts"
   },
   "dependencies": {
     "better-auth": "^1.7.15",
@@ -29,6 +31,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@playwright/test": "1.65.1",
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

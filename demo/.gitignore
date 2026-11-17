@@ -1,0 +1,3 @@
+# Saved demo session and Playwright output; never commit these.
+.auth/
+test-results/
